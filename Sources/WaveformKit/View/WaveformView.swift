@@ -6,6 +6,7 @@ import SwiftUI
 /// WaveformView(
 ///     summary: summary,
 ///     currentTime: adapter.currentTime,
+///     style: .mirroredBars(),
 ///     onSeek: { adapter.seek(to: $0) }
 /// )
 /// ```
@@ -49,7 +50,17 @@ public struct WaveformView: View {
                 progress: progress,
                 spacing: spacing,
                 cornerRadius: cornerRadius,
-                colors: colors
+                colors: colors,
+                mirrored: false
+            )
+        case let .mirroredBars(count, spacing, cornerRadius):
+            BarsRenderer(
+                amplitudes: resampled(to: count),
+                progress: progress,
+                spacing: spacing,
+                cornerRadius: cornerRadius,
+                colors: colors,
+                mirrored: true
             )
         }
     }

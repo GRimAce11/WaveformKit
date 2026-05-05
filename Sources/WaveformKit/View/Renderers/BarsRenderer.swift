@@ -6,6 +6,7 @@ struct BarsRenderer: View {
     let spacing: CGFloat
     let cornerRadius: CGFloat
     let colors: WaveformColors
+    let mirrored: Bool
 
     var body: some View {
         Canvas { context, size in
@@ -14,6 +15,7 @@ struct BarsRenderer: View {
 
             let totalSpacing = spacing * CGFloat(max(0, count - 1))
             let barWidth = max(1, (size.width - totalSpacing) / CGFloat(count))
+            let centerY = size.height / 2
             let progressX = size.width * CGFloat(progress)
             let minBarHeight: CGFloat = 2
 
@@ -24,7 +26,12 @@ struct BarsRenderer: View {
                 let amp = CGFloat(amplitudes[i])
                 let x = CGFloat(i) * (barWidth + spacing)
                 let h = max(minBarHeight, min(size.height, amp * size.height))
-                let rect = CGRect(x: x, y: size.height - h, width: barWidth, height: h)
+                let rect: CGRect
+                if mirrored {
+                    rect = CGRect(x: x, y: centerY - h / 2, width: barWidth, height: h)
+                } else {
+                    rect = CGRect(x: x, y: size.height - h, width: barWidth, height: h)
+                }
                 let path = Path(roundedRect: rect, cornerRadius: cornerRadius)
                 let isPlayed = (x + barWidth / 2) <= progressX
                 context.fill(path, with: isPlayed ? playedShading : unplayedShading)
