@@ -3,6 +3,8 @@ import SwiftUI
 struct BarsRenderer: View {
     let amplitudes: [Float]
     let progress: Double
+    let amplitudeScale: CGFloat   // 1 = static, >1 in reactive/combined mode
+    let showsProgress: Bool
     let spacing: CGFloat
     let cornerRadius: CGFloat
     let colors: WaveformColors
@@ -23,7 +25,7 @@ struct BarsRenderer: View {
             let unplayedShading = shading(colors.unplayed, gradient: colors.unplayedGradient, size: size)
 
             for i in 0..<count {
-                let amp = CGFloat(amplitudes[i])
+                let amp = CGFloat(amplitudes[i]) * amplitudeScale
                 let x = CGFloat(i) * (barWidth + spacing)
                 let h = max(minBarHeight, min(size.height, amp * size.height))
                 let rect: CGRect
@@ -33,7 +35,7 @@ struct BarsRenderer: View {
                     rect = CGRect(x: x, y: size.height - h, width: barWidth, height: h)
                 }
                 let path = Path(roundedRect: rect, cornerRadius: cornerRadius)
-                let isPlayed = (x + barWidth / 2) <= progressX
+                let isPlayed = !showsProgress || (x + barWidth / 2) <= progressX
                 context.fill(path, with: isPlayed ? playedShading : unplayedShading)
             }
         }

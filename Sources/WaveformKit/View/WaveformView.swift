@@ -6,27 +6,35 @@ import SwiftUI
 /// WaveformView(
 ///     summary: summary,
 ///     currentTime: adapter.currentTime,
-///     style: .mirroredBars(),
+///     amplitude: tap.currentAmplitude,
+///     style: .dancingBars(count: 32),
+///     movement: .reactive(boost: 1.5),
 ///     onSeek: { adapter.seek(to: $0) }
 /// )
 /// ```
 public struct WaveformView: View {
     private let summary: WaveformSummary
     private let currentTime: TimeInterval
+    private let amplitude: Float
     private let style: WaveformStyle
+    private let movement: WaveformMovement
     private let colors: WaveformColors
     private let onSeek: ((TimeInterval) -> Void)?
 
     public init(
         summary: WaveformSummary,
         currentTime: TimeInterval,
+        amplitude: Float = 0,
         style: WaveformStyle = .bars(),
+        movement: WaveformMovement = .progress,
         colors: WaveformColors = WaveformColors(),
         onSeek: ((TimeInterval) -> Void)? = nil
     ) {
         self.summary = summary
         self.currentTime = currentTime
+        self.amplitude = amplitude
         self.style = style
+        self.movement = movement
         self.colors = colors
         self.onSeek = onSeek
     }
@@ -48,6 +56,8 @@ public struct WaveformView: View {
             BarsRenderer(
                 amplitudes: resampled(to: count),
                 progress: progress,
+                amplitudeScale: amplitudeScale,
+                showsProgress: movement.showsProgress,
                 spacing: spacing,
                 cornerRadius: cornerRadius,
                 colors: colors,
@@ -57,10 +67,22 @@ public struct WaveformView: View {
             BarsRenderer(
                 amplitudes: resampled(to: count),
                 progress: progress,
+                amplitudeScale: amplitudeScale,
+                showsProgress: movement.showsProgress,
                 spacing: spacing,
                 cornerRadius: cornerRadius,
                 colors: colors,
                 mirrored: true
+            )
+        case let .dancingBars(count, spacing, cornerRadius):
+            DancingBarsRenderer(
+                count: count,
+                amplitude: amplitude,
+                progress: progress,
+                showsProgress: movement.showsProgress,
+                spacing: spacing,
+                cornerRadius: cornerRadius,
+                colors: colors
             )
         }
     }
@@ -68,6 +90,13 @@ public struct WaveformView: View {
     private var progress: Double {
         guard summary.duration > 0 else { return 0 }
         return min(1, max(0, currentTime / summary.duration))
+    }
+
+    /// Multiplier applied to each bar's height in reactive/combined modes.
+    private var amplitudeScale: CGFloat {
+        let boost = movement.reactiveBoost
+        guard boost > 0 else { return 1 }
+        return 1 + boost * CGFloat(amplitude)
     }
 
     private func seekGesture(width: CGFloat) -> some Gesture {
