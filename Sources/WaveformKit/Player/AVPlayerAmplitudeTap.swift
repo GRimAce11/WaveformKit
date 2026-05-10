@@ -5,21 +5,33 @@ import Accelerate
 import Observation
 import os
 
-/// Thread-safe storage shared between the audio-render-thread tap callback and the main-thread poll.
+/// Thread-safe storage shared between the audio render thread (writer) and the main-thread poll
+/// (reader). Holds the latest single-RMS amplitude and the latest FFT band magnitudes.
 final class AmplitudeTapStorage: @unchecked Sendable {
     private var lock = os_unfair_lock_s()
     private var amplitude: Float = 0
+    private var bands: [Float]
+    let analyzer: FFTAnalyzer
 
-    func set(_ value: Float) {
+    init(bandCount: Int, sampleRate: Float) {
+        self.bands = [Float](repeating: 0, count: bandCount)
+        self.analyzer = FFTAnalyzer(fftSize: 1024, bandCount: bandCount, sampleRate: sampleRate)
+    }
+
+    /// Called from audio render thread. `incomingBands` length must equal `bands.count`.
+    func update(amplitude newAmplitude: Float, withBands incomingBands: [Float]) {
         os_unfair_lock_lock(&lock)
-        amplitude = value
+        amplitude = newAmplitude
+        if bands.count == incomingBands.count {
+            for i in 0..<bands.count { bands[i] = incomingBands[i] }
+        }
         os_unfair_lock_unlock(&lock)
     }
 
-    func get() -> Float {
+    func snapshot() -> (amplitude: Float, bands: [Float]) {
         os_unfair_lock_lock(&lock)
         defer { os_unfair_lock_unlock(&lock) }
-        return amplitude
+        return (amplitude, bands)
     }
 }
 
@@ -27,16 +39,21 @@ final class AmplitudeTapStorage: @unchecked Sendable {
 @MainActor
 public final class AVPlayerAmplitudeTap: AmplitudeTap {
     public private(set) var currentAmplitude: Float = 0
+    public private(set) var bands: [Float]
 
-    @ObservationIgnored private let storage = AmplitudeTapStorage()
+    @ObservationIgnored private let storage: AmplitudeTapStorage
     @ObservationIgnored private var tap: MTAudioProcessingTap?
     @ObservationIgnored private weak var item: AVPlayerItem?
     @ObservationIgnored private var timer: Timer?
-    @ObservationIgnored private var envelope = AmplitudeEnvelope()
+    @ObservationIgnored private var amplitudeEnvelope = AmplitudeEnvelope()
+    @ObservationIgnored private var bandEnvelopes: [AmplitudeEnvelope]
     @ObservationIgnored private let pollInterval: TimeInterval
 
-    public init(player: AVPlayer, pollRate: Double = 30) {
+    public init(player: AVPlayer, bandCount: Int = 32, pollRate: Double = 30) {
         self.pollInterval = 1.0 / max(1, pollRate)
+        self.storage = AmplitudeTapStorage(bandCount: bandCount, sampleRate: 44100)
+        self.bands = [Float](repeating: 0, count: bandCount)
+        self.bandEnvelopes = Array(repeating: AmplitudeEnvelope(), count: bandCount)
         startPolling()
         Task { [weak self] in
             await self?.attach(to: player)
@@ -89,17 +106,22 @@ public final class AVPlayerAmplitudeTap: AmplitudeTap {
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self else { return }
-                let raw = self.storage.get()
-                self.currentAmplitude = self.envelope.step(target: raw, dt: Float(self.pollInterval))
+                self?.tick()
             }
+        }
+    }
+
+    private func tick() {
+        let (rawAmp, rawBands) = storage.snapshot()
+        currentAmplitude = amplitudeEnvelope.step(target: rawAmp, dt: Float(pollInterval))
+        let n = min(rawBands.count, bands.count, bandEnvelopes.count)
+        for i in 0..<n {
+            bands[i] = bandEnvelopes[i].step(target: rawBands[i], dt: Float(pollInterval))
         }
     }
 
     deinit {
         timer?.invalidate()
-        // Detach the tap from the player item so the audio engine releases it.
-        // Storage is released via the tap's finalize callback.
         Task { @MainActor [weak item] in
             item?.audioMix = nil
         }
@@ -127,18 +149,32 @@ private let amplitudeTapProcess: MTAudioProcessingTapProcessCallback = {
     let storage = Unmanaged<AmplitudeTapStorage>.fromOpaque(storagePtr).takeUnretainedValue()
 
     let abl = UnsafeMutableAudioBufferListPointer(bufferListInOut)
+
+    // RMS across all buffers + push the first (or downmixed) channel's samples into the FFT ring.
     var sumSquares: Float = 0
     var totalCount: Float = 0
+    var firstChannelReady = false
+
     for buf in abl {
         guard let data = buf.mData, buf.mDataByteSize > 0 else { continue }
         let floatCount = Int(buf.mDataByteSize) / MemoryLayout<Float>.size
         guard floatCount > 0 else { continue }
         let ptr = data.assumingMemoryBound(to: Float.self)
+
         var rms: Float = 0
         vDSP_rmsqv(ptr, 1, &rms, vDSP_Length(floatCount))
         sumSquares += rms * rms * Float(floatCount)
         totalCount += Float(floatCount)
+
+        if !firstChannelReady {
+            // Push as many samples as fit; FFTAnalyzer is a ring, so excess simply overwrites.
+            _ = storage.analyzer.push(samples: ptr, count: floatCount)
+            firstChannelReady = true
+        }
     }
+
     let amplitude = totalCount > 0 ? sqrt(sumSquares / totalCount) : 0
-    storage.set(min(1, max(0, amplitude)))
+    var bandOut = [Float](repeating: 0, count: storage.analyzer.bandCount)
+    storage.analyzer.computeBands(out: &bandOut)
+    storage.update(amplitude: min(1, max(0, amplitude)), withBands: bandOut)
 }

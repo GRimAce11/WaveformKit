@@ -6,6 +6,9 @@ import Observation
 @MainActor
 public final class AVAudioPlayerAmplitudeTap: AmplitudeTap {
     public private(set) var currentAmplitude: Float = 0
+    /// Always empty: `AVAudioPlayer` exposes whole-channel power only, no PCM. Use `AVPlayer` if
+    /// you need a spectrum.
+    public let bands: [Float] = []
 
     @ObservationIgnored private let player: AVAudioPlayer
     @ObservationIgnored private var timer: Timer?
