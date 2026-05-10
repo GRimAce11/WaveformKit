@@ -3,6 +3,7 @@ import SwiftUI
 struct DancingBarsRenderer: View {
     let count: Int
     let amplitude: Float          // smoothed 0...1 from AmplitudeTap
+    let bands: [Float]            // FFT bands 0...1 (empty if unavailable)
     let progress: Double
     let showsProgress: Bool
     let spacing: CGFloat
@@ -31,14 +32,22 @@ struct DancingBarsRenderer: View {
         let playedShading = shading(colors.played, gradient: colors.playedGradient, size: size)
         let unplayedShading = shading(colors.unplayed, gradient: colors.unplayedGradient, size: size)
 
+        // Prefer real FFT bands if the tap supplied a matching number; otherwise synthesize a
+        // per-bar wobble from the single amplitude value so the row still "dances."
+        let useBands = bands.count >= count
         let amp = CGFloat(amplitude)
 
         for i in 0..<count {
-            let phase = Self.phase(for: i)
-            let wobble = 0.5 + 0.5 * sin(time * 6.2 + Double(phase) * .pi * 2)
-            let perBar = amp * (0.45 + 0.55 * CGFloat(wobble))
-            // Floor so quiet sections still show a "resting" pulse.
-            let resting: CGFloat = 0.04 + 0.02 * CGFloat(sin(time * 1.7 + Double(phase) * 4))
+            let perBar: CGFloat
+            if useBands {
+                perBar = CGFloat(bands[i])
+            } else {
+                let phase = Self.phase(for: i)
+                let wobble = 0.5 + 0.5 * sin(time * 6.2 + Double(phase) * .pi * 2)
+                perBar = amp * (0.45 + 0.55 * CGFloat(wobble))
+            }
+            let phaseSeed = Self.phase(for: i)
+            let resting: CGFloat = 0.04 + 0.02 * CGFloat(sin(time * 1.7 + Double(phaseSeed) * 4))
             let h = max(minBarHeight, max(resting, perBar) * size.height)
 
             let x = CGFloat(i) * (barWidth + spacing)
@@ -49,7 +58,6 @@ struct DancingBarsRenderer: View {
         }
     }
 
-    /// Stable pseudo-random phase per bar so adjacent bars don't move together.
     private static func phase(for index: Int) -> Float {
         let x = Float(index) * 12.9898
         let s = sin(x) * 43758.5453

@@ -2,11 +2,13 @@ import SwiftUI
 
 /// A SwiftUI waveform view that doubles as a seek control.
 ///
+/// Reactive usage with an FFT-capable tap:
 /// ```swift
 /// WaveformView(
 ///     summary: summary,
 ///     currentTime: adapter.currentTime,
 ///     amplitude: tap.currentAmplitude,
+///     bands: tap.bands,
 ///     style: .dancingBars(count: 32),
 ///     movement: .reactive(boost: 1.5),
 ///     onSeek: { adapter.seek(to: $0) }
@@ -16,6 +18,7 @@ public struct WaveformView: View {
     private let summary: WaveformSummary
     private let currentTime: TimeInterval
     private let amplitude: Float
+    private let bands: [Float]
     private let style: WaveformStyle
     private let movement: WaveformMovement
     private let colors: WaveformColors
@@ -25,6 +28,7 @@ public struct WaveformView: View {
         summary: WaveformSummary,
         currentTime: TimeInterval,
         amplitude: Float = 0,
+        bands: [Float] = [],
         style: WaveformStyle = .bars(),
         movement: WaveformMovement = .progress,
         colors: WaveformColors = WaveformColors(),
@@ -33,6 +37,7 @@ public struct WaveformView: View {
         self.summary = summary
         self.currentTime = currentTime
         self.amplitude = amplitude
+        self.bands = bands
         self.style = style
         self.movement = movement
         self.colors = colors
@@ -78,6 +83,7 @@ public struct WaveformView: View {
             DancingBarsRenderer(
                 count: count,
                 amplitude: amplitude,
+                bands: bands,
                 progress: progress,
                 showsProgress: movement.showsProgress,
                 spacing: spacing,
@@ -92,7 +98,6 @@ public struct WaveformView: View {
         return min(1, max(0, currentTime / summary.duration))
     }
 
-    /// Multiplier applied to each bar's height in reactive/combined modes.
     private var amplitudeScale: CGFloat {
         let boost = movement.reactiveBoost
         guard boost > 0 else { return 1 }
