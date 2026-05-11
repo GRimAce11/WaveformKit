@@ -90,6 +90,15 @@ public struct WaveformView: View {
                 cornerRadius: cornerRadius,
                 colors: colors
             )
+        case let .line(thickness):
+            LineRenderer(
+                amplitudes: resampled(to: max(2, min(400, summary.amplitudes.count))),
+                progress: progress,
+                amplitudeScale: amplitudeScale,
+                showsProgress: movement.showsProgress,
+                thickness: thickness,
+                colors: colors
+            )
         }
     }
 

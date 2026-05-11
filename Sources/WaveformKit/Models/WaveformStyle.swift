@@ -5,9 +5,10 @@ public enum WaveformStyle: Sendable, Equatable {
     case bars(count: Int = 100, spacing: CGFloat = 2, cornerRadius: CGFloat = 1.5)
     /// Bars centered on the midline — WhatsApp / iMessage voice-note look.
     case mirroredBars(count: Int = 100, spacing: CGFloat = 2, cornerRadius: CGFloat = 1.5)
-    /// Equalizer-style bouncing bars driven by live amplitude.
-    /// Each bar has a stable pseudo-random phase so the row "dances" instead of moving as one block.
+    /// Equalizer-style bouncing bars driven by live amplitude (or FFT bands if the tap provides them).
     case dancingBars(count: Int = 32, spacing: CGFloat = 3, cornerRadius: CGFloat = 2)
+    /// A smooth filled mirrored curve. Minimal/elegant.
+    case line(thickness: CGFloat = 2)
 }
 
 public enum WaveformMovement: Sendable, Equatable {
