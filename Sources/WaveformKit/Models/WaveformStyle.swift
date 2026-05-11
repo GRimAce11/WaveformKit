@@ -9,6 +9,8 @@ public enum WaveformStyle: Sendable, Equatable {
     case dancingBars(count: Int = 32, spacing: CGFloat = 3, cornerRadius: CGFloat = 2)
     /// A smooth filled mirrored curve. Minimal/elegant.
     case line(thickness: CGFloat = 2)
+    /// Discrete capsules along the midline — voice-note minimal style.
+    case dots(count: Int = 60, dotSize: CGFloat = 4, spacing: CGFloat = 4)
 }
 
 public enum WaveformMovement: Sendable, Equatable {

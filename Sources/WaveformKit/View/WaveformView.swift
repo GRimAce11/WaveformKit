@@ -99,6 +99,16 @@ public struct WaveformView: View {
                 thickness: thickness,
                 colors: colors
             )
+        case let .dots(count, dotSize, spacing):
+            DotsRenderer(
+                amplitudes: resampled(to: count),
+                progress: progress,
+                amplitudeScale: amplitudeScale,
+                showsProgress: movement.showsProgress,
+                dotSize: dotSize,
+                spacing: spacing,
+                colors: colors
+            )
         }
     }
 
