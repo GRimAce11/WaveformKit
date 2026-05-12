@@ -49,7 +49,7 @@ public struct WaveformView: View {
             renderer
                 .frame(width: geo.size.width, height: geo.size.height)
                 .contentShape(Rectangle())
-                .gesture(seekGesture(width: geo.size.width))
+                .gesture(seekGesture(width: geo.size.width, height: geo.size.height))
                 .animation(.linear(duration: 0.05), value: currentTime)
         }
     }
@@ -109,6 +109,16 @@ public struct WaveformView: View {
                 spacing: spacing,
                 colors: colors
             )
+        case let .circular(count, innerRadiusFraction, barWidth):
+            CircularBarsRenderer(
+                amplitudes: resampled(to: count),
+                progress: progress,
+                amplitudeScale: amplitudeScale,
+                showsProgress: movement.showsProgress,
+                innerRadiusFraction: innerRadiusFraction,
+                barWidth: barWidth,
+                colors: colors
+            )
         }
     }
 
@@ -123,13 +133,29 @@ public struct WaveformView: View {
         return 1 + boost * CGFloat(amplitude)
     }
 
-    private func seekGesture(width: CGFloat) -> some Gesture {
+    private func seekGesture(width: CGFloat, height: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
                 guard summary.duration > 0, width > 0 else { return }
-                let p = max(0, min(1, value.location.x / width))
+                let p = Self.seekProgress(for: value.location, in: CGSize(width: width, height: height), style: style)
                 onSeek?(p * summary.duration)
             }
+    }
+
+    /// Map a touch point to 0...1 progress. Linear for X-axis styles, angular for circular.
+    private static func seekProgress(for location: CGPoint, in size: CGSize, style: WaveformStyle) -> Double {
+        switch style {
+        case .circular:
+            let center = CGPoint(x: size.width / 2, y: size.height / 2)
+            let dx = Double(location.x - center.x)
+            let dy = Double(location.y - center.y)
+            // Match the renderer: angle 0 is at the top, sweeping clockwise.
+            var angle = atan2(dy, dx) + .pi / 2
+            if angle < 0 { angle += 2 * .pi }
+            return min(1, max(0, angle / (2 * .pi)))
+        default:
+            return min(1, max(0, Double(location.x) / Double(size.width)))
+        }
     }
 
     private func resampled(to count: Int) -> [Float] {

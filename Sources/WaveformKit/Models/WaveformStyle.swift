@@ -11,6 +11,8 @@ public enum WaveformStyle: Sendable, Equatable {
     case line(thickness: CGFloat = 2)
     /// Discrete capsules along the midline — voice-note minimal style.
     case dots(count: Int = 60, dotSize: CGFloat = 4, spacing: CGFloat = 4)
+    /// Bars arranged radially around a center point. View must be square for best results.
+    case circular(count: Int = 64, innerRadiusFraction: CGFloat = 0.45, barWidth: CGFloat = 3)
 }
 
 public enum WaveformMovement: Sendable, Equatable {
