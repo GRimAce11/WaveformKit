@@ -22,7 +22,8 @@ public enum WaveformMovement: Sendable, Equatable {
     case reactive(boost: CGFloat = 1.5)
     /// Progress fill + reactive amplitude scaling on the played portion.
     case combined(boost: CGFloat = 1.0)
-    /// Subtle shimmer when no audio is playing.
+    /// Scanning shimmer (the played color sweeps left-to-right and back) for "loaded but not
+    /// playing" or loading-skeleton states. Renders a placeholder waveform if `summary` is empty.
     case idle
 }
 

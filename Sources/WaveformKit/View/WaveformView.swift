@@ -46,23 +46,40 @@ public struct WaveformView: View {
 
     public var body: some View {
         GeometryReader { geo in
-            renderer
-                .frame(width: geo.size.width, height: geo.size.height)
+            content(width: geo.size.width, height: geo.size.height)
+        }
+    }
+
+    @ViewBuilder
+    private func content(width: CGFloat, height: CGFloat) -> some View {
+        if case .idle = movement {
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: false)) { timeline in
+                let phase = Self.idleProgress(at: timeline.date.timeIntervalSinceReferenceDate, cycle: 2.5)
+                renderer(progressOverride: phase, forceShowsProgress: true)
+                    .frame(width: width, height: height)
+                    .contentShape(Rectangle())
+                    .gesture(seekGesture(width: width, height: height))
+            }
+        } else {
+            renderer(progressOverride: nil, forceShowsProgress: false)
+                .frame(width: width, height: height)
                 .contentShape(Rectangle())
-                .gesture(seekGesture(width: geo.size.width, height: geo.size.height))
+                .gesture(seekGesture(width: width, height: height))
                 .animation(.linear(duration: 0.05), value: currentTime)
         }
     }
 
     @ViewBuilder
-    private var renderer: some View {
+    private func renderer(progressOverride: Double?, forceShowsProgress: Bool) -> some View {
+        let activeProgress = progressOverride ?? progress
+        let activeShowsProgress = forceShowsProgress || movement.showsProgress
         switch style {
         case let .bars(count, spacing, cornerRadius):
             BarsRenderer(
                 amplitudes: resampled(to: count),
-                progress: progress,
+                progress: activeProgress,
                 amplitudeScale: amplitudeScale,
-                showsProgress: movement.showsProgress,
+                showsProgress: activeShowsProgress,
                 spacing: spacing,
                 cornerRadius: cornerRadius,
                 colors: colors,
@@ -71,9 +88,9 @@ public struct WaveformView: View {
         case let .mirroredBars(count, spacing, cornerRadius):
             BarsRenderer(
                 amplitudes: resampled(to: count),
-                progress: progress,
+                progress: activeProgress,
                 amplitudeScale: amplitudeScale,
-                showsProgress: movement.showsProgress,
+                showsProgress: activeShowsProgress,
                 spacing: spacing,
                 cornerRadius: cornerRadius,
                 colors: colors,
@@ -84,8 +101,8 @@ public struct WaveformView: View {
                 count: count,
                 amplitude: amplitude,
                 bands: bands,
-                progress: progress,
-                showsProgress: movement.showsProgress,
+                progress: activeProgress,
+                showsProgress: activeShowsProgress,
                 spacing: spacing,
                 cornerRadius: cornerRadius,
                 colors: colors
@@ -93,18 +110,18 @@ public struct WaveformView: View {
         case let .line(thickness):
             LineRenderer(
                 amplitudes: resampled(to: max(2, min(400, summary.amplitudes.count))),
-                progress: progress,
+                progress: activeProgress,
                 amplitudeScale: amplitudeScale,
-                showsProgress: movement.showsProgress,
+                showsProgress: activeShowsProgress,
                 thickness: thickness,
                 colors: colors
             )
         case let .dots(count, dotSize, spacing):
             DotsRenderer(
                 amplitudes: resampled(to: count),
-                progress: progress,
+                progress: activeProgress,
                 amplitudeScale: amplitudeScale,
-                showsProgress: movement.showsProgress,
+                showsProgress: activeShowsProgress,
                 dotSize: dotSize,
                 spacing: spacing,
                 colors: colors
@@ -112,14 +129,22 @@ public struct WaveformView: View {
         case let .circular(count, innerRadiusFraction, barWidth):
             CircularBarsRenderer(
                 amplitudes: resampled(to: count),
-                progress: progress,
+                progress: activeProgress,
                 amplitudeScale: amplitudeScale,
-                showsProgress: movement.showsProgress,
+                showsProgress: activeShowsProgress,
                 innerRadiusFraction: innerRadiusFraction,
                 barWidth: barWidth,
                 colors: colors
             )
         }
+    }
+
+    /// Smooth ping-pong shimmer in `[0, 1]` for `.idle` movement. Continuous and seamless across
+    /// cycle boundaries (no jumps to 0). Pure function for unit testing.
+    static func idleProgress(at time: TimeInterval, cycle: TimeInterval) -> Double {
+        guard cycle > 0 else { return 0 }
+        let theta = (time / cycle) * 2 * .pi
+        return (1 - cos(theta)) / 2
     }
 
     private var progress: Double {
@@ -160,7 +185,11 @@ public struct WaveformView: View {
 
     private func resampled(to count: Int) -> [Float] {
         let src = summary.amplitudes
-        guard !src.isEmpty, count > 0 else { return [] }
+        if src.isEmpty {
+            if case .idle = movement { return Self.placeholderAmplitudes(count: count) }
+            return []
+        }
+        guard count > 0 else { return [] }
         if src.count == count { return src }
         var out: [Float] = []
         out.reserveCapacity(count)
@@ -171,6 +200,20 @@ public struct WaveformView: View {
             let slice = src[start..<end]
             let sum = slice.reduce(0, +)
             out.append(sum / Float(slice.count))
+        }
+        return out
+    }
+
+    /// Rolling sinusoidal placeholder used when `.idle` is requested with no loaded summary, so
+    /// loading-skeleton UIs render a sensible shape for the shimmer to scan across.
+    static func placeholderAmplitudes(count: Int) -> [Float] {
+        guard count > 0 else { return [] }
+        var out: [Float] = []
+        out.reserveCapacity(count)
+        for i in 0..<count {
+            let t = Float(i) / Float(max(1, count - 1))
+            let value = 0.15 + 0.45 * (0.5 + 0.5 * sin(t * .pi * 4))
+            out.append(value)
         }
         return out
     }
