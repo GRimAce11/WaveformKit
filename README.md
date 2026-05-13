@@ -11,7 +11,9 @@ A SwiftUI waveform component for music players — six built-in styles, live amp
 - **Six wave styles** — bars, mirrored bars, dancing bars, line, dots, circular
 - **Built-in seek control** — drag-anywhere on linear styles, angular scrubbing on circular
 - **Reactive to playback** — bars dance with live amplitude or real FFT bands
+- **Live mic recording** — `MicrophoneRecorder` drives the same view API for voice-memo UIs
 - **Works with both players** — `AVPlayer` (streaming + local) and `AVAudioPlayer` (local) via adapters
+- **Loading skeleton** — `.idle` movement animates a shimmer (with a placeholder shape if no summary loaded)
 - **Color customization** — solid colors or gradients, played / unplayed split
 - **Disk cache** — repeat opens of the same file are instant
 - **SwiftUI native** — `@Observable`, `Canvas` + `TimelineView`, no UIKit dependency
@@ -120,7 +122,21 @@ WaveformView(summary: summary, currentTime: t, style: .circular(count: 64))
 | `.progress` | Static waveform; played portion colored differently |
 | `.reactive(boost:)` | Bars scale by `1 + boost * amplitude`; no progress fill |
 | `.combined(boost:)` | Progress fill **and** amplitude scaling on the played portion |
-| `.idle` | Reserved for shimmer effects (currently behaves like `.progress`) |
+| `.idle` | Ping-pong shimmer (played color sweeps across) — for loading skeletons or "loaded but not playing" states. Renders a placeholder shape if `summary` is empty. |
+
+### Loading skeleton
+
+```swift
+// While the summary is decoding, show an animated shimmer of the same dimensions.
+WaveformView(
+    summary: summary,                       // .empty is fine — placeholder renders
+    currentTime: 0,
+    style: .bars(count: 80),
+    movement: .idle,
+    colors: WaveformColors(played: .accentColor, unplayed: .gray.opacity(0.2))
+)
+.frame(height: 60)
+```
 
 ## Players
 
@@ -140,6 +156,84 @@ let tap = AVPlayerAmplitudeTap(player: player, bandCount: 32)
 ```
 
 Both adapters are `@Observable` — reading `adapter.currentTime` in your view body automatically re-renders on every playback tick.
+
+## Recording from the microphone
+
+`MicrophoneRecorder` captures from `AVAudioEngine.inputNode` and drives the same `WaveformView`
+inputs as the file adapters — so a voice-memo recording UI is the same view code as a player UI.
+
+```swift
+import WaveformKit
+
+@State private var recorder = MicrophoneRecorder(
+    bandCount: 32,
+    binsPerSecond: 20,                                // waveform resolution while recording
+    maximumDuration: 60,                              // auto-stop after 60s (optional)
+    outputURL: FileManager.default.temporaryDirectory
+        .appendingPathComponent("memo.caf")           // omit to keep recording in-memory only
+)
+
+var body: some View {
+    VStack {
+        WaveformView(
+            summary: recorder.summary,                // grows as the recording progresses
+            currentTime: recorder.currentTime,
+            amplitude: recorder.currentAmplitude,
+            bands: recorder.bands,
+            style: .mirroredBars(count: 80),
+            movement: .reactive(boost: 1.4),
+            colors: WaveformColors(played: .red)
+        )
+        .frame(height: 60)
+
+        HStack {
+            Button(recorder.isRecording ? "Stop" : "Record") {
+                if recorder.isRecording {
+                    recorder.stop()
+                } else {
+                    Task { try? await recorder.start() }
+                }
+            }
+            if recorder.isRecording {
+                Button(recorder.isPaused ? "Resume" : "Pause") {
+                    recorder.isPaused ? recorder.resume() : recorder.pause()
+                }
+            }
+        }
+    }
+}
+```
+
+After `stop()`, `recorder.recordedFileURL` points at the captured file (if `outputURL` was set),
+and `recorder.summary` holds the final amplitude bins for playback-time scrubbing.
+
+### Setup checklist
+
+- **Info.plist** — add `NSMicrophoneUsageDescription` with a user-facing reason. Without it, iOS
+  will reject the permission prompt and `start()` throws `.permissionDenied`.
+- **iOS audio session** — `start()` configures `.playAndRecord` / `.measurement` with
+  `.defaultToSpeaker` and `.allowBluetooth`. `stop()` deactivates the session. If your app already
+  manages `AVAudioSession` globally, configure it before calling `start()` and the recorder will
+  reuse the running configuration.
+- **macOS entitlements** — sandboxed macOS apps need the Audio Input entitlement
+  (`com.apple.security.device.audio-input`).
+- **Background recording** — requires the `audio` value in `UIBackgroundModes`.
+
+### Error handling
+
+```swift
+do {
+    try await recorder.start()
+} catch MicrophoneRecorderError.permissionDenied {
+    // Show "Enable microphone in Settings"
+} catch MicrophoneRecorderError.engineStartFailed(let err) {
+    // Hardware unavailable, route conflict, etc.
+} catch {
+    // .audioSessionFailed, .fileCreationFailed, .alreadyRecording
+}
+```
+
+`recorder.lastError` carries the most recent failure for observation-driven UIs.
 
 ## FFT spectrum bands
 
@@ -212,9 +306,10 @@ AudioSource ──┐
 ## Known limitations
 
 - `MTAudioProcessingTap` assumes Float32 PCM. Exotic codecs may need a `prepare` callback to negotiate format (planned).
-- `.idle` movement is declared but currently behaves like `.progress`. Shimmer effects are TBD.
 - `AVAudioPlayer` cannot produce FFT bands (Apple limitation, not a WaveformKit one).
-- No live-mic input mode yet — file playback only. Planned via `AVAudioEngine` tap.
+- `MicrophoneRecorder` doesn't yet observe `AVAudioSession.interruptionNotification` /
+  `routeChangeNotification`. If a phone call interrupts the engine you'll need to call `stop()` and
+  `start()` again (planned).
 
 ## License
 

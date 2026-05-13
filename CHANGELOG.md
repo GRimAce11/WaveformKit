@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-13
+
+### Added
+- `MicrophoneRecorder` — live mic capture via `AVAudioEngine` that drives the same `WaveformView`
+  API as the file adapters. Exposes `currentAmplitude`, `bands` (FFT), and a growing `summary` so
+  bars/mirroredBars/dots render the recording as it accrues.
+  - Requests mic permission on iOS 17+ (`AVAudioApplication`) and macOS (`AVCaptureDevice`).
+  - Configures the iOS audio session (`.playAndRecord` / `.measurement`) and tears it down on `stop()`.
+  - Optional `outputURL:` writes captured audio to disk during recording.
+  - `pause()` / `resume()` / `reset()` plus optional `maximumDuration:` cap.
+  - Surfaces failures via `MicrophoneRecorderError` and `lastError`.
+- `.idle` movement now renders a smooth ping-pong shimmer (played color sweeps left↔right on a
+  2.5 s cycle). Works on every style and renders a placeholder waveform if `summary` is empty —
+  usable as a loading skeleton before audio is decoded.
+
+### Notes
+- Apps using `MicrophoneRecorder` must add `NSMicrophoneUsageDescription` to Info.plist.
+
 ## [0.1.0] - 2026-05-12
 
 Initial public release.
