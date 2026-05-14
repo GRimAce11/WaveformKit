@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-14
+
+### Added
+- **Markers & regions overlay** — pass `markers: [WaveformMarker]` to `WaveformView` to render
+  point markers (line + dot + optional label) or region markers (translucent band + edge stripe +
+  optional label) over any linear style. New `onMarkerTap` callback fires when a marker is tapped
+  without dragging, distinct from `onSeek`. Hit-test geometry is exposed via the testable static
+  `WaveformView.hitTestMarker`.
+
+### Notes
+- Tap on empty waveform still triggers `onSeek` immediately; markers only intercept their own
+  hit area when `onMarkerTap` is set.
+- Markers are linear-only in this release — `.circular` skips them.
+
 ## [0.2.0] - 2026-05-13
 
 ### Added

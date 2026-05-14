@@ -11,6 +11,7 @@ A SwiftUI waveform component for music players — six built-in styles, live amp
 - **Six wave styles** — bars, mirrored bars, dancing bars, line, dots, circular
 - **Built-in seek control** — drag-anywhere on linear styles, angular scrubbing on circular
 - **Reactive to playback** — bars dance with live amplitude or real FFT bands
+- **Markers & regions** — overlay chapters / comments / clip regions with tap-to-jump callbacks
 - **Live mic recording** — `MicrophoneRecorder` drives the same view API for voice-memo UIs
 - **Works with both players** — `AVPlayer` (streaming + local) and `AVAudioPlayer` (local) via adapters
 - **Loading skeleton** — `.idle` movement animates a shimmer (with a placeholder shape if no summary loaded)
@@ -156,6 +157,39 @@ let tap = AVPlayerAmplitudeTap(player: player, bandCount: 32)
 ```
 
 Both adapters are `@Observable` — reading `adapter.currentTime` in your view body automatically re-renders on every playback tick.
+
+## Markers & regions
+
+Annotate the waveform with point markers (chapters, bookmarks, comments) or region overlays
+(chorus segments, voiceover ranges, edit clips). Both ride on top of any linear style without
+changing the renderer, and tapping a marker fires a typed callback distinct from `onSeek`.
+
+```swift
+let chapters: [WaveformMarker] = [
+    WaveformMarker(time: 12,                color: .yellow,            label: "Intro"),
+    WaveformMarker(time: 48, duration: 22,  color: .orange,            label: "Verse 1"),
+    WaveformMarker(time: 95,                color: .pink,              label: "Drop"),
+]
+
+WaveformView(
+    summary: summary,
+    currentTime: t,
+    style: .mirroredBars(count: 120),
+    markers: chapters,
+    onSeek:      { player.seek(to: $0) },
+    onMarkerTap: { marker in player.seek(to: marker.time) }
+)
+```
+
+**Behavior**
+
+- **Point markers** (`duration: 0`) render as a vertical line + filled dot at the top. Tap → fire `onMarkerTap` with that marker.
+- **Region markers** (`duration > 0`) render as a translucent tinted band with an edge stripe. Tap inside or near the edge → fire `onMarkerTap`.
+- **Tap on empty waveform** → seeks to that position (the existing immediate-scrub gesture is preserved).
+- **Drag** → always seeks; the marker tap only fires when the user releases without dragging.
+- **`onMarkerTap` is optional** — leave it `nil` and markers behave as decoration; the seek gesture treats them as ordinary waveform pixels.
+
+Markers are linear-only in v0.3 — they don't render on `.circular`.
 
 ## Recording from the microphone
 
@@ -310,6 +344,7 @@ AudioSource ──┐
 - `MicrophoneRecorder` doesn't yet observe `AVAudioSession.interruptionNotification` /
   `routeChangeNotification`. If a phone call interrupts the engine you'll need to call `stop()` and
   `start()` again (planned).
+- `WaveformMarker`s don't render on `.circular` style. Angular tick rendering is on the roadmap.
 
 ## License
 
