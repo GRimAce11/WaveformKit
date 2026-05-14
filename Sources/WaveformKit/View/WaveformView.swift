@@ -22,7 +22,11 @@ public struct WaveformView: View {
     private let style: WaveformStyle
     private let movement: WaveformMovement
     private let colors: WaveformColors
+    private let markers: [WaveformMarker]
     private let onSeek: ((TimeInterval) -> Void)?
+    private let onMarkerTap: ((WaveformMarker) -> Void)?
+
+    @State private var dragState = DragState()
 
     public init(
         summary: WaveformSummary,
@@ -32,7 +36,9 @@ public struct WaveformView: View {
         style: WaveformStyle = .bars(),
         movement: WaveformMovement = .progress,
         colors: WaveformColors = WaveformColors(),
-        onSeek: ((TimeInterval) -> Void)? = nil
+        markers: [WaveformMarker] = [],
+        onSeek: ((TimeInterval) -> Void)? = nil,
+        onMarkerTap: ((WaveformMarker) -> Void)? = nil
     ) {
         self.summary = summary
         self.currentTime = currentTime
@@ -41,7 +47,9 @@ public struct WaveformView: View {
         self.style = style
         self.movement = movement
         self.colors = colors
+        self.markers = markers
         self.onSeek = onSeek
+        self.onMarkerTap = onMarkerTap
     }
 
     public var body: some View {
@@ -52,21 +60,30 @@ public struct WaveformView: View {
 
     @ViewBuilder
     private func content(width: CGFloat, height: CGFloat) -> some View {
-        if case .idle = movement {
-            TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: false)) { timeline in
-                let phase = Self.idleProgress(at: timeline.date.timeIntervalSinceReferenceDate, cycle: 2.5)
-                renderer(progressOverride: phase, forceShowsProgress: true)
-                    .frame(width: width, height: height)
-                    .contentShape(Rectangle())
-                    .gesture(seekGesture(width: width, height: height))
+        let size = CGSize(width: width, height: height)
+        ZStack {
+            if case .idle = movement {
+                TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: false)) { timeline in
+                    let phase = Self.idleProgress(at: timeline.date.timeIntervalSinceReferenceDate, cycle: 2.5)
+                    renderer(progressOverride: phase, forceShowsProgress: true)
+                }
+            } else {
+                renderer(progressOverride: nil, forceShowsProgress: false)
+                    .animation(.linear(duration: 0.05), value: currentTime)
             }
-        } else {
-            renderer(progressOverride: nil, forceShowsProgress: false)
-                .frame(width: width, height: height)
-                .contentShape(Rectangle())
-                .gesture(seekGesture(width: width, height: height))
-                .animation(.linear(duration: 0.05), value: currentTime)
+            if shouldRenderMarkers {
+                MarkersOverlay(markers: markers, duration: summary.duration)
+            }
         }
+        .frame(width: width, height: height)
+        .contentShape(Rectangle())
+        .gesture(seekGesture(size: size))
+    }
+
+    private var shouldRenderMarkers: Bool {
+        guard !markers.isEmpty, summary.duration > 0 else { return false }
+        if case .circular = style { return false }
+        return true
     }
 
     @ViewBuilder
@@ -158,14 +175,43 @@ public struct WaveformView: View {
         return 1 + boost * CGFloat(amplitude)
     }
 
-    private func seekGesture(width: CGFloat, height: CGFloat) -> some Gesture {
+    private func seekGesture(size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
-                guard summary.duration > 0, width > 0 else { return }
-                let p = Self.seekProgress(for: value.location, in: CGSize(width: width, height: height), style: style)
+                guard summary.duration > 0, size.width > 0 else { return }
+
+                if !dragState.checkedFirstTouch {
+                    dragState.checkedFirstTouch = true
+                    if onMarkerTap != nil, !markers.isEmpty {
+                        dragState.startedOnMarker = Self.hitTestMarker(
+                            markers,
+                            at: value.startLocation,
+                            in: size,
+                            duration: summary.duration,
+                            style: style
+                        )
+                    }
+                }
+
+                let translation = hypot(value.translation.width, value.translation.height)
+                if translation > Self.dragThreshold { dragState.hasDragged = true }
+
+                // While the user is potentially tapping a marker (no drag yet), suppress seek so
+                // the marker's onTap fires cleanly on release.
+                if dragState.startedOnMarker != nil && !dragState.hasDragged { return }
+
+                let p = Self.seekProgress(for: value.location, in: size, style: style)
                 onSeek?(p * summary.duration)
             }
+            .onEnded { _ in
+                if let marker = dragState.startedOnMarker, !dragState.hasDragged {
+                    onMarkerTap?(marker)
+                }
+                dragState = DragState()
+            }
     }
+
+    private static let dragThreshold: CGFloat = 4
 
     /// Map a touch point to 0...1 progress. Linear for X-axis styles, angular for circular.
     private static func seekProgress(for location: CGPoint, in size: CGSize, style: WaveformStyle) -> Double {
@@ -181,6 +227,43 @@ public struct WaveformView: View {
         default:
             return min(1, max(0, Double(location.x) / Double(size.width)))
         }
+    }
+
+    /// Returns the marker nearest to `location` along the X axis within `hitRadius` points,
+    /// or `nil` if none qualify. Region markers report a distance of 0 when the touch is inside.
+    /// Always returns `nil` for `.circular` style (markers are linear-only in this release).
+    static func hitTestMarker(
+        _ markers: [WaveformMarker],
+        at location: CGPoint,
+        in size: CGSize,
+        duration: TimeInterval,
+        style: WaveformStyle,
+        hitRadius: CGFloat = 14
+    ) -> WaveformMarker? {
+        guard duration > 0, size.width > 0, !markers.isEmpty else { return nil }
+        if case .circular = style { return nil }
+        let widthPerSecond = size.width / CGFloat(duration)
+        var best: WaveformMarker?
+        var bestDistance: CGFloat = .infinity
+        for m in markers {
+            let startX = CGFloat(m.time) * widthPerSecond
+            let dx: CGFloat
+            if m.isRegion {
+                let endX = startX + CGFloat(m.duration) * widthPerSecond
+                if location.x >= startX, location.x <= endX {
+                    dx = 0
+                } else {
+                    dx = min(abs(location.x - startX), abs(location.x - endX))
+                }
+            } else {
+                dx = abs(location.x - startX)
+            }
+            if dx <= hitRadius, dx < bestDistance {
+                best = m
+                bestDistance = dx
+            }
+        }
+        return best
     }
 
     private func resampled(to count: Int) -> [Float] {
@@ -217,4 +300,10 @@ public struct WaveformView: View {
         }
         return out
     }
+}
+
+private struct DragState {
+    var checkedFirstTouch: Bool = false
+    var startedOnMarker: WaveformMarker?
+    var hasDragged: Bool = false
 }

@@ -1,4 +1,5 @@
 import XCTest
+import SwiftUI
 @testable import WaveformKit
 
 final class WaveformKitTests: XCTestCase {
@@ -35,7 +36,6 @@ final class WaveformKitTests: XCTestCase {
     }
 
     func testIdleProgressBounded() {
-        // Sample 200 points across two cycles, all must stay within [0, 1].
         for i in 0..<200 {
             let t = TimeInterval(i) * 0.05
             let p = WaveformView.idleProgress(at: t, cycle: 2.5)
@@ -91,5 +91,117 @@ final class WaveformKitTests: XCTestCase {
         r.reset()
         XCTAssertFalse(r.isRecording)
         XCTAssertEqual(r.bands.count, 8)
+    }
+
+    // MARK: - Marker hit testing
+
+    private let testSize = CGSize(width: 200, height: 60)
+    private let testDuration: TimeInterval = 20
+
+    func testHitTestEmptyMarkersReturnsNil() {
+        let hit = WaveformView.hitTestMarker(
+            [],
+            at: CGPoint(x: 100, y: 30),
+            in: testSize,
+            duration: testDuration,
+            style: .bars()
+        )
+        XCTAssertNil(hit)
+    }
+
+    func testHitTestZeroDurationReturnsNil() {
+        let m = WaveformMarker(time: 5, color: .red)
+        let hit = WaveformView.hitTestMarker(
+            [m],
+            at: CGPoint(x: 50, y: 30),
+            in: testSize,
+            duration: 0,
+            style: .bars()
+        )
+        XCTAssertNil(hit)
+    }
+
+    func testHitTestPointMarkerExact() {
+        let m = WaveformMarker(time: 10, color: .red, label: "mid")
+        let hit = WaveformView.hitTestMarker(
+            [m],
+            at: CGPoint(x: 100, y: 30),
+            in: testSize,
+            duration: testDuration,
+            style: .bars()
+        )
+        XCTAssertEqual(hit?.id, m.id)
+    }
+
+    func testHitTestPointMarkerOutsideRadius() {
+        let m = WaveformMarker(time: 10, color: .red)
+        let hit = WaveformView.hitTestMarker(
+            [m],
+            at: CGPoint(x: 130, y: 30),
+            in: testSize,
+            duration: testDuration,
+            style: .bars()
+        )
+        XCTAssertNil(hit)
+    }
+
+    func testHitTestRegionMarkerInside() {
+        let m = WaveformMarker(time: 5, duration: 5, color: .blue, label: "chorus")
+        let hit = WaveformView.hitTestMarker(
+            [m],
+            at: CGPoint(x: 70, y: 30),
+            in: testSize,
+            duration: testDuration,
+            style: .bars()
+        )
+        XCTAssertEqual(hit?.id, m.id)
+    }
+
+    func testHitTestRegionMarkerOutsideButWithinEdgeRadius() {
+        let m = WaveformMarker(time: 5, duration: 5, color: .blue)
+        let hit = WaveformView.hitTestMarker(
+            [m],
+            at: CGPoint(x: 110, y: 30),
+            in: testSize,
+            duration: testDuration,
+            style: .bars()
+        )
+        XCTAssertEqual(hit?.id, m.id)
+    }
+
+    func testHitTestPicksNearestMarker() {
+        let near = WaveformMarker(time: 10, color: .red)
+        let far = WaveformMarker(time: 11, color: .green)
+        let hit = WaveformView.hitTestMarker(
+            [far, near],
+            at: CGPoint(x: 102, y: 30),
+            in: testSize,
+            duration: testDuration,
+            style: .bars()
+        )
+        XCTAssertEqual(hit?.id, near.id)
+    }
+
+    func testHitTestSkipsCircularStyle() {
+        let m = WaveformMarker(time: 10, color: .red)
+        let hit = WaveformView.hitTestMarker(
+            [m],
+            at: CGPoint(x: 100, y: 30),
+            in: testSize,
+            duration: testDuration,
+            style: .circular()
+        )
+        XCTAssertNil(hit)
+    }
+
+    func testMarkerIsRegion() {
+        XCTAssertFalse(WaveformMarker(time: 1, color: .red).isRegion)
+        XCTAssertTrue(WaveformMarker(time: 1, duration: 2, color: .red).isRegion)
+    }
+
+    func testMarkerClampsNegativeDuration() {
+        let m = WaveformMarker(time: 1, duration: -5, color: .red)
+        XCTAssertEqual(m.duration, 0)
+        XCTAssertFalse(m.isRegion)
     }
 }
