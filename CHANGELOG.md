@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-05-15
+
+### Added
+- `MicrophoneInterruption` enum and `onInterruption:` / `autoResumeAfterInterruption:` parameters
+  on `MicrophoneRecorder`. The recorder now observes `AVAudioSession.interruptionNotification` and
+  `routeChangeNotification`, syncs `isPaused` when the system pauses capture for a phone call or
+  Siri, fires the callback for every event, and auto-resumes when iOS hints `shouldResume`.
+
+### Fixed
+- `AVPlayerAmplitudeTap` now installs `MTAudioProcessingTap` prepare/unprepare callbacks. FFT band
+  edges are now mapped to the **actual** source sample rate instead of a hard-coded 44.1 kHz, so
+  48 / 96 kHz tracks line up with the right frequencies. Int16 PCM sources are converted to
+  Float32 via a pre-allocated scratch (no audio-thread allocations); unsupported formats are
+  skipped cleanly instead of garbling the visualization.
+- `FFTAnalyzer.updateSampleRate(_:)` recomputes band edges in place. Band-edge math factored into
+  the testable static `FFTAnalyzer.computeBandEdges`.
+
 ## [0.3.0] - 2026-05-14
 
 ### Added

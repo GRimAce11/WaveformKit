@@ -269,6 +269,32 @@ do {
 
 `recorder.lastError` carries the most recent failure for observation-driven UIs.
 
+### Interruptions & route changes
+
+Phone calls, Siri, alarms, and headphone changes are handled automatically. The recorder syncs
+`isPaused` when the OS pauses capture, fires `onInterruption` with the event, and (by default)
+auto-resumes if iOS hints `shouldResume`.
+
+```swift
+let recorder = MicrophoneRecorder(
+    autoResumeAfterInterruption: true,           // default; flip to keep paused after the call
+    onInterruption: { event in
+        switch event {
+        case .began:
+            // UI: show "Paused — interrupted by phone call"
+        case .ended(let shouldResume):
+            // The recorder already auto-resumed if shouldResume && autoResumeAfterInterruption.
+            break
+        case .audioRouteChanged(let reason):
+            if reason == .oldDeviceUnavailable {
+                // Headphones unplugged — many voice apps pause here.
+                recorder.pause()
+            }
+        }
+    }
+)
+```
+
 ## FFT spectrum bands
 
 `AVPlayerAmplitudeTap` runs a real-time FFT (vDSP, 1024-point, Hann-windowed) on the audio render thread and exposes logarithmically-spaced frequency bands.
@@ -339,12 +365,10 @@ AudioSource ──┐
 
 ## Known limitations
 
-- `MTAudioProcessingTap` assumes Float32 PCM. Exotic codecs may need a `prepare` callback to negotiate format (planned).
 - `AVAudioPlayer` cannot produce FFT bands (Apple limitation, not a WaveformKit one).
-- `MicrophoneRecorder` doesn't yet observe `AVAudioSession.interruptionNotification` /
-  `routeChangeNotification`. If a phone call interrupts the engine you'll need to call `stop()` and
-  `start()` again (planned).
 - `WaveformMarker`s don't render on `.circular` style. Angular tick rendering is on the roadmap.
+- `AVPlayerAmplitudeTap` falls back gracefully on `Float32` and `Int16` PCM. Less common sample
+  formats (Int24, Int32, big-endian variants) are skipped — bands/amplitude will read 0.
 
 ## License
 
