@@ -24,12 +24,16 @@ final class FFTAnalyzer: @unchecked Sendable {
     private var magnitudes: [Float]
 
     /// Inclusive start indices of each band into the magnitude bin array. Size = bandCount + 1.
-    private let bandEdges: [Int]
+    /// Recomputed when `updateSampleRate(_:)` is called so the bands map to real frequencies once
+    /// the actual stream rate is known.
+    private var bandEdges: [Int]
+    private(set) var sampleRate: Float
 
     init(fftSize: Int = 1024, bandCount: Int = 32, sampleRate: Float = 44100) {
         precondition((fftSize & (fftSize - 1)) == 0, "fftSize must be a power of two")
         self.fftSize = fftSize
         self.bandCount = bandCount
+        self.sampleRate = sampleRate
         self.log2N = vDSP_Length(log2(Double(fftSize)))
         self.setup = vDSP_create_fftsetup(log2N, FFTRadix(kFFTRadix2))!
 
@@ -43,8 +47,22 @@ final class FFTAnalyzer: @unchecked Sendable {
         self.workImag = [Float](repeating: 0, count: half)
         self.windowed = [Float](repeating: 0, count: fftSize)
         self.magnitudes = [Float](repeating: 0, count: half)
+        self.bandEdges = Self.computeBandEdges(fftSize: fftSize, bandCount: bandCount, sampleRate: sampleRate)
+    }
 
-        // Logarithmic band edges between 40 Hz and Nyquist (capped at 16 kHz).
+    /// Re-run band-edge mapping for a newly learned sample rate. Cheap (no FFT setup
+    /// reallocation). Call from the audio thread inside an MTAudioProcessingTap prepare callback
+    /// once the real ASBD is known.
+    func updateSampleRate(_ rate: Float) {
+        guard rate > 0, rate != sampleRate else { return }
+        sampleRate = rate
+        bandEdges = Self.computeBandEdges(fftSize: fftSize, bandCount: bandCount, sampleRate: rate)
+    }
+
+    /// Pure function so callers (and tests) can compute band edges without instantiating an FFT.
+    /// Logarithmic edges between 40 Hz and Nyquist (capped at 16 kHz).
+    static func computeBandEdges(fftSize: Int, bandCount: Int, sampleRate: Float) -> [Int] {
+        let half = fftSize / 2
         let minFreq: Float = 40
         let maxFreq: Float = min(sampleRate / 2, 16000)
         let binsPerHz = Float(fftSize) / sampleRate
@@ -56,7 +74,7 @@ final class FFTAnalyzer: @unchecked Sendable {
             let bin = Int((f * binsPerHz).rounded())
             edges.append(min(half - 1, max(1, bin)))
         }
-        self.bandEdges = edges
+        return edges
     }
 
     deinit {

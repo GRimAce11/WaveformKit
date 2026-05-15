@@ -7,11 +7,18 @@ import os
 
 /// Thread-safe storage shared between the audio render thread (writer) and the main-thread poll
 /// (reader). Holds the latest single-RMS amplitude and the latest FFT band magnitudes.
+///
+/// Fields touched only on the audio thread (`format`, `conversionScratch`) are not lock-protected
+/// because MTAudioProcessingTap serializes its prepare/process callbacks.
 final class AmplitudeTapStorage: @unchecked Sendable {
     private var lock = os_unfair_lock_s()
     private var amplitude: Float = 0
     private var bands: [Float]
     let analyzer: FFTAnalyzer
+
+    // Audio-thread only — populated in prepare(), consumed in process().
+    var sourceFormat: AudioStreamBasicDescription?
+    var conversionScratch: [Float] = []
 
     init(bandCount: Int, sampleRate: Float) {
         self.bands = [Float](repeating: 0, count: bandCount)
@@ -32,6 +39,25 @@ final class AmplitudeTapStorage: @unchecked Sendable {
         os_unfair_lock_lock(&lock)
         defer { os_unfair_lock_unlock(&lock) }
         return (amplitude, bands)
+    }
+
+    /// Called from MTAudioProcessingTap prepare callback (audio thread, once per setup).
+    /// Updates the FFT analyzer's sample rate so band edges map to real frequencies, and
+    /// preallocates a Float32 conversion buffer if the source isn't already Float32.
+    func prepare(maxFrames: Int, format: AudioStreamBasicDescription) {
+        sourceFormat = format
+        analyzer.updateSampleRate(Float(format.mSampleRate))
+        let isFloat = (format.mFormatFlags & kAudioFormatFlagIsFloat) != 0
+        if isFloat {
+            conversionScratch = []
+        } else {
+            conversionScratch = [Float](repeating: 0, count: max(1, maxFrames))
+        }
+    }
+
+    func unprepare() {
+        sourceFormat = nil
+        conversionScratch = []
     }
 }
 
@@ -76,8 +102,8 @@ public final class AVPlayerAmplitudeTap: AmplitudeTap {
             clientInfo: Unmanaged.passRetained(storage).toOpaque(),
             init: amplitudeTapInit,
             finalize: amplitudeTapFinalize,
-            prepare: nil,
-            unprepare: nil,
+            prepare: amplitudeTapPrepare,
+            unprepare: amplitudeTapUnprepare,
             process: amplitudeTapProcess
         )
 
@@ -137,6 +163,18 @@ private let amplitudeTapFinalize: MTAudioProcessingTapFinalizeCallback = { tap i
     Unmanaged<AmplitudeTapStorage>.fromOpaque(storagePtr).release()
 }
 
+private let amplitudeTapPrepare: MTAudioProcessingTapPrepareCallback = { tap, maxFrames, formatPtr in
+    let storagePtr = MTAudioProcessingTapGetStorage(tap)
+    let storage = Unmanaged<AmplitudeTapStorage>.fromOpaque(storagePtr).takeUnretainedValue()
+    storage.prepare(maxFrames: Int(maxFrames), format: formatPtr.pointee)
+}
+
+private let amplitudeTapUnprepare: MTAudioProcessingTapUnprepareCallback = { tap in
+    let storagePtr = MTAudioProcessingTapGetStorage(tap)
+    let storage = Unmanaged<AmplitudeTapStorage>.fromOpaque(storagePtr).takeUnretainedValue()
+    storage.unprepare()
+}
+
 private let amplitudeTapProcess: MTAudioProcessingTapProcessCallback = {
     tap, numberFrames, _, bufferListInOut, numberFramesOut, flagsOut in
 
@@ -150,25 +188,55 @@ private let amplitudeTapProcess: MTAudioProcessingTapProcessCallback = {
 
     let abl = UnsafeMutableAudioBufferListPointer(bufferListInOut)
 
-    // RMS across all buffers + push the first (or downmixed) channel's samples into the FFT ring.
+    let isFloat: Bool
+    let isInt16: Bool
+    if let fmt = storage.sourceFormat {
+        isFloat = (fmt.mFormatFlags & kAudioFormatFlagIsFloat) != 0
+        isInt16 = !isFloat
+            && (fmt.mFormatFlags & kAudioFormatFlagIsSignedInteger) != 0
+            && fmt.mBitsPerChannel == 16
+    } else {
+        // No prepare callback fired yet — assume the historical default of Float32 PCM.
+        isFloat = true
+        isInt16 = false
+    }
+    guard isFloat || isInt16 else { return }   // Unsupported integer width — skip cleanly.
+
     var sumSquares: Float = 0
     var totalCount: Float = 0
     var firstChannelReady = false
 
     for buf in abl {
         guard let data = buf.mData, buf.mDataByteSize > 0 else { continue }
-        let floatCount = Int(buf.mDataByteSize) / MemoryLayout<Float>.size
-        guard floatCount > 0 else { continue }
-        let ptr = data.assumingMemoryBound(to: Float.self)
+        let floatPtr: UnsafePointer<Float>
+        let frameCount: Int
+
+        if isFloat {
+            frameCount = Int(buf.mDataByteSize) / MemoryLayout<Float>.size
+            guard frameCount > 0 else { continue }
+            floatPtr = UnsafePointer(data.assumingMemoryBound(to: Float.self))
+        } else {
+            // Int16 → Float32 [-1, 1] into the preallocated scratch (no audio-thread alloc).
+            let int16Count = Int(buf.mDataByteSize) / MemoryLayout<Int16>.size
+            guard int16Count > 0, int16Count <= storage.conversionScratch.count else { continue }
+            frameCount = int16Count
+            let intPtr = data.assumingMemoryBound(to: Int16.self)
+            storage.conversionScratch.withUnsafeMutableBufferPointer { scratch in
+                guard let base = scratch.baseAddress else { return }
+                vDSP_vflt16(intPtr, 1, base, 1, vDSP_Length(int16Count))
+                var scale: Float = 1.0 / 32768.0
+                vDSP_vsmul(base, 1, &scale, base, 1, vDSP_Length(int16Count))
+            }
+            floatPtr = UnsafePointer(storage.conversionScratch.withUnsafeBufferPointer { $0.baseAddress! })
+        }
 
         var rms: Float = 0
-        vDSP_rmsqv(ptr, 1, &rms, vDSP_Length(floatCount))
-        sumSquares += rms * rms * Float(floatCount)
-        totalCount += Float(floatCount)
+        vDSP_rmsqv(floatPtr, 1, &rms, vDSP_Length(frameCount))
+        sumSquares += rms * rms * Float(frameCount)
+        totalCount += Float(frameCount)
 
         if !firstChannelReady {
-            // Push as many samples as fit; FFTAnalyzer is a ring, so excess simply overwrites.
-            _ = storage.analyzer.push(samples: ptr, count: floatCount)
+            _ = storage.analyzer.push(samples: floatPtr, count: frameCount)
             firstChannelReady = true
         }
     }

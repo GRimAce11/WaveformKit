@@ -204,4 +204,47 @@ final class WaveformKitTests: XCTestCase {
         XCTAssertEqual(m.duration, 0)
         XCTAssertFalse(m.isRegion)
     }
+
+    // MARK: - FFT band edges
+
+    func testFFTBandEdgesCount() {
+        let edges = FFTAnalyzer.computeBandEdges(fftSize: 1024, bandCount: 32, sampleRate: 44100)
+        XCTAssertEqual(edges.count, 33)
+    }
+
+    func testFFTBandEdgesAreMonotonicallyNonDecreasing() {
+        let edges = FFTAnalyzer.computeBandEdges(fftSize: 1024, bandCount: 32, sampleRate: 48000)
+        for i in 1..<edges.count {
+            XCTAssertGreaterThanOrEqual(edges[i], edges[i - 1])
+        }
+    }
+
+    func testFFTBandEdgesStayWithinFFTBins() {
+        let edges = FFTAnalyzer.computeBandEdges(fftSize: 1024, bandCount: 32, sampleRate: 96000)
+        let half = 1024 / 2
+        for e in edges {
+            XCTAssertGreaterThanOrEqual(e, 1)
+            XCTAssertLessThanOrEqual(e, half - 1)
+        }
+    }
+
+    func testFFTBandEdgesDifferAcrossSampleRates() {
+        let e44 = FFTAnalyzer.computeBandEdges(fftSize: 1024, bandCount: 32, sampleRate: 44100)
+        let e96 = FFTAnalyzer.computeBandEdges(fftSize: 1024, bandCount: 32, sampleRate: 96000)
+        XCTAssertNotEqual(e44, e96)
+    }
+
+    func testFFTUpdateSampleRateChangesEdges() {
+        let analyzer = FFTAnalyzer(fftSize: 1024, bandCount: 32, sampleRate: 44100)
+        let original = analyzer.sampleRate
+        analyzer.updateSampleRate(48000)
+        XCTAssertEqual(analyzer.sampleRate, 48000)
+        XCTAssertNotEqual(analyzer.sampleRate, original)
+    }
+
+    func testFFTUpdateSampleRateNoOpForIdenticalRate() {
+        let analyzer = FFTAnalyzer(fftSize: 1024, bandCount: 32, sampleRate: 44100)
+        analyzer.updateSampleRate(44100)
+        XCTAssertEqual(analyzer.sampleRate, 44100)
+    }
 }
