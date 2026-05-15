@@ -11,6 +11,25 @@ public enum MicrophoneRecorderError: Error, Sendable {
     case fileCreationFailed(underlying: NSError)
 }
 
+/// System-level events that can affect mic capture mid-recording. Delivered to the recorder's
+/// `onInterruption` callback so the app can react (toast, button-state sync, etc.).
+public enum MicrophoneInterruption: Sendable, Equatable {
+    /// Another audio source (phone call, Siri, alarm) interrupted capture. Engine is now paused.
+    case began
+    /// The interruption ended. `shouldResume` mirrors iOS's hint: when `true`, the OS recommends
+    /// resuming. The recorder auto-resumes only if `autoResumeAfterInterruption` was enabled.
+    case ended(shouldResume: Bool)
+    /// The audio route changed (headphones unplugged, AirPods connected, etc.). Capture continues
+    /// on the new route; apps may choose to pause manually for e.g. `oldDeviceUnavailable`.
+    case audioRouteChanged(reason: RouteChangeReason)
+
+    public enum RouteChangeReason: Sendable, Equatable {
+        case oldDeviceUnavailable
+        case newDeviceAvailable
+        case other
+    }
+}
+
 /// Live microphone capture that drives the same `WaveformView` API as the file-playback adapters.
 ///
 /// Usage:
@@ -59,6 +78,7 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
     public let bandCount: Int
     public let binsPerSecond: Double
     public let maximumDuration: TimeInterval?
+    public let autoResumeAfterInterruption: Bool
 
     @ObservationIgnored private let engine = AVAudioEngine()
     @ObservationIgnored private var storage: AmplitudeTapStorage
@@ -74,18 +94,25 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
     @ObservationIgnored private let binInterval: TimeInterval
     @ObservationIgnored private let outputURL: URL?
     @ObservationIgnored private var outputFile: AVAudioFile?
+    @ObservationIgnored private let onInterruption: (@MainActor (MicrophoneInterruption) -> Void)?
+    @ObservationIgnored private var interruptionObserver: NSObjectProtocol?
+    @ObservationIgnored private var routeObserver: NSObjectProtocol?
 
     public init(
         bandCount: Int = 32,
         binsPerSecond: Double = 20,
         pollRate: Double = 30,
         maximumDuration: TimeInterval? = nil,
-        outputURL: URL? = nil
+        outputURL: URL? = nil,
+        autoResumeAfterInterruption: Bool = true,
+        onInterruption: (@MainActor (MicrophoneInterruption) -> Void)? = nil
     ) {
         self.bandCount = bandCount
         self.binsPerSecond = max(1, binsPerSecond)
         self.maximumDuration = maximumDuration
         self.outputURL = outputURL
+        self.autoResumeAfterInterruption = autoResumeAfterInterruption
+        self.onInterruption = onInterruption
         self.pollInterval = 1.0 / max(1, pollRate)
         self.binInterval = 1.0 / max(1, binsPerSecond)
         self.bands = [Float](repeating: 0, count: bandCount)
@@ -171,6 +198,7 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
         isRecording = true
         isPaused = false
         startTickTimers()
+        installSystemObservers()
     }
 
     public func pause() {
@@ -204,6 +232,7 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
         binTimer = nil
         isRecording = false
         isPaused = false
+        removeSystemObservers()
 
         outputFile = nil
         summary = WaveformSummary(
@@ -217,6 +246,87 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
         #endif
     }
+
+    // MARK: - System event observers
+
+    private func installSystemObservers() {
+        #if os(iOS) || os(tvOS) || os(visionOS)
+        let center = NotificationCenter.default
+        interruptionObserver = center.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            let userInfo = note.userInfo
+            Task { @MainActor [weak self] in
+                self?.handleInterruption(userInfo: userInfo)
+            }
+        }
+        routeObserver = center.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            let userInfo = note.userInfo
+            Task { @MainActor [weak self] in
+                self?.handleRouteChange(userInfo: userInfo)
+            }
+        }
+        #endif
+    }
+
+    private func removeSystemObservers() {
+        let center = NotificationCenter.default
+        if let o = interruptionObserver { center.removeObserver(o) }
+        if let o = routeObserver { center.removeObserver(o) }
+        interruptionObserver = nil
+        routeObserver = nil
+    }
+
+    #if os(iOS) || os(tvOS) || os(visionOS)
+    private func handleInterruption(userInfo: [AnyHashable: Any]?) {
+        guard isRecording,
+              let userInfo,
+              let raw = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+        switch type {
+        case .began:
+            // The system has already paused our engine. Sync state so the UI reflects that.
+            if !isPaused {
+                pausedAt = Date.timeIntervalSinceReferenceDate
+                isPaused = true
+            }
+            onInterruption?(.began)
+        case .ended:
+            let optsRaw = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+            let opts = AVAudioSession.InterruptionOptions(rawValue: optsRaw)
+            let shouldResume = opts.contains(.shouldResume)
+            onInterruption?(.ended(shouldResume: shouldResume))
+            if shouldResume, autoResumeAfterInterruption, isPaused {
+                resume()
+            }
+        @unknown default:
+            break
+        }
+    }
+
+    private func handleRouteChange(userInfo: [AnyHashable: Any]?) {
+        guard isRecording,
+              let userInfo,
+              let raw = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
+        let mapped: MicrophoneInterruption.RouteChangeReason
+        switch reason {
+        case .oldDeviceUnavailable: mapped = .oldDeviceUnavailable
+        case .newDeviceAvailable:   mapped = .newDeviceAvailable
+        default:                    mapped = .other
+        }
+        onInterruption?(.audioRouteChanged(reason: mapped))
+    }
+    #else
+    private func handleInterruption(userInfo: [AnyHashable: Any]?) {}
+    private func handleRouteChange(userInfo: [AnyHashable: Any]?) {}
+    #endif
 
     /// Drop the in-progress (or just-finished) capture, including any file written via `outputURL`.
     /// Safe to call whether or not a recording is active.
@@ -296,6 +406,9 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
     deinit {
         tickTimer?.invalidate()
         binTimer?.invalidate()
+        let center = NotificationCenter.default
+        if let o = interruptionObserver { center.removeObserver(o) }
+        if let o = routeObserver { center.removeObserver(o) }
         if engine.isRunning {
             engine.stop()
             engine.inputNode.removeTap(onBus: 0)

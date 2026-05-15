@@ -247,4 +247,32 @@ final class WaveformKitTests: XCTestCase {
         analyzer.updateSampleRate(44100)
         XCTAssertEqual(analyzer.sampleRate, 44100)
     }
+
+    // MARK: - MicrophoneInterruption
+
+    func testMicrophoneInterruptionEquality() {
+        XCTAssertEqual(MicrophoneInterruption.began, .began)
+        XCTAssertEqual(MicrophoneInterruption.ended(shouldResume: true), .ended(shouldResume: true))
+        XCTAssertNotEqual(MicrophoneInterruption.ended(shouldResume: true), .ended(shouldResume: false))
+        XCTAssertEqual(
+            MicrophoneInterruption.audioRouteChanged(reason: .oldDeviceUnavailable),
+            MicrophoneInterruption.audioRouteChanged(reason: .oldDeviceUnavailable)
+        )
+        XCTAssertNotEqual(
+            MicrophoneInterruption.audioRouteChanged(reason: .oldDeviceUnavailable),
+            MicrophoneInterruption.audioRouteChanged(reason: .newDeviceAvailable)
+        )
+    }
+
+    @MainActor
+    func testMicrophoneRecorderAcceptsInterruptionCallback() {
+        var seen: MicrophoneInterruption?
+        let r = MicrophoneRecorder(
+            autoResumeAfterInterruption: false,
+            onInterruption: { event in seen = event }
+        )
+        XCTAssertFalse(r.autoResumeAfterInterruption)
+        XCTAssertNil(seen)
+        _ = r
+    }
 }
