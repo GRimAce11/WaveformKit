@@ -13,12 +13,14 @@ concurrency:
 jobs:
   test:
     name: Build & test (macOS)
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Show Swift version
-        run: swift --version
+      - name: Show toolchain
+        run: |
+          swift --version
+          xcodebuild -version
 
       - name: Build
         run: swift build -v
@@ -28,15 +30,15 @@ jobs:
 
   ios-build:
     name: Build for iOS Simulator
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_15.4.app || true
+      - name: Show toolchain
+        run: xcodebuild -version
 
       - name: Resolve packages
-        run: xcodebuild -resolvePackageDependencies
+        run: xcodebuild -resolvePackageDependencies -scheme WaveformKit
 
       - name: Build for iOS Simulator
         run: |
