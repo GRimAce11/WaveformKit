@@ -107,14 +107,33 @@ public final class AVPlayerAmplitudeTap: AmplitudeTap {
             process: amplitudeTapProcess
         )
 
+        // Swift's importer toggles MTAudioProcessingTapCreate's out-parameter between
+        // `UnsafeMutablePointer<MTAudioProcessingTap?>` (Xcode 26+/Swift 6.2+) and
+        // `UnsafeMutablePointer<Unmanaged<MTAudioProcessingTap>?>` (earlier toolchains) depending
+        // on SDK header annotations. We compile against whichever the local toolchain expects.
+        let createdTap: MTAudioProcessingTap?
+        let status: OSStatus
+        #if compiler(>=6.2)
         var tapOut: MTAudioProcessingTap?
-        let status = MTAudioProcessingTapCreate(
+        status = MTAudioProcessingTapCreate(
             kCFAllocatorDefault,
             &callbacks,
             kMTAudioProcessingTapCreationFlag_PostEffects,
             &tapOut
         )
-        guard status == noErr, let createdTap = tapOut else {
+        createdTap = (status == noErr) ? tapOut : nil
+        #else
+        var tapOut: Unmanaged<MTAudioProcessingTap>?
+        status = MTAudioProcessingTapCreate(
+            kCFAllocatorDefault,
+            &callbacks,
+            kMTAudioProcessingTapCreationFlag_PostEffects,
+            &tapOut
+        )
+        createdTap = (status == noErr) ? tapOut?.takeRetainedValue() : nil
+        #endif
+
+        guard let createdTap else {
             Unmanaged.passUnretained(storage).release()
             return
         }
