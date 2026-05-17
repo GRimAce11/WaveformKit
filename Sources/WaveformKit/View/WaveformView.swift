@@ -78,6 +78,82 @@ public struct WaveformView: View {
         .frame(width: width, height: height)
         .contentShape(Rectangle())
         .gesture(seekGesture(size: size))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityLabelText)
+        .accessibilityValue(accessibilityValueText)
+        .accessibilityAdjustableAction { direction in
+            guard summary.duration > 0 else { return }
+            let stepSize = max(1, summary.duration * 0.05)
+            switch direction {
+            case .increment:
+                onSeek?(min(summary.duration, currentTime + stepSize))
+            case .decrement:
+                onSeek?(max(0, currentTime - stepSize))
+            @unknown default:
+                break
+            }
+        }
+    }
+
+    private var accessibilityLabelText: String {
+        let base = summary.duration > 0 ? "Audio waveform" : "Audio waveform, no audio loaded"
+        if !markers.isEmpty {
+            let suffix = markers.count == 1 ? "1 marker" : "\(markers.count) markers"
+            return "\(base), \(suffix)"
+        }
+        return base
+    }
+
+    private var accessibilityValueText: String {
+        guard summary.duration > 0 else { return "no audio loaded" }
+        return "\(Self.formatTime(currentTime)) of \(Self.formatTime(summary.duration))"
+    }
+
+    /// Render a static snapshot of a waveform view as a `CGImage`. Useful for voice-memo
+    /// thumbnails, share-sheet previews, App Store screenshots, and any cell-list rendering
+    /// where running a live `Canvas` per row would be wasteful.
+    ///
+    /// Wrap the result in `UIImage(cgImage:)` (iOS / tvOS / visionOS) or
+    /// `NSImage(cgImage:size:)` (macOS) as needed.
+    @MainActor
+    public static func snapshot(
+        summary: WaveformSummary,
+        size: CGSize,
+        currentTime: TimeInterval = 0,
+        amplitude: Float = 0,
+        bands: [Float] = [],
+        style: WaveformStyle = .bars(),
+        movement: WaveformMovement = .progress,
+        colors: WaveformColors = WaveformColors(),
+        markers: [WaveformMarker] = [],
+        scale: CGFloat = 2
+    ) -> CGImage? {
+        let view = WaveformView(
+            summary: summary,
+            currentTime: currentTime,
+            amplitude: amplitude,
+            bands: bands,
+            style: style,
+            movement: movement,
+            colors: colors,
+            markers: markers
+        )
+        .frame(width: size.width, height: size.height)
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = scale
+        return renderer.cgImage
+    }
+
+    static func formatTime(_ t: TimeInterval) -> String {
+        let total = Int(t.rounded())
+        let minutes = total / 60
+        let seconds = total % 60
+        if minutes >= 60 {
+            let hours = minutes / 60
+            let remMin = minutes % 60
+            return String(format: "%d:%02d:%02d", hours, remMin, seconds)
+        }
+        return String(format: "%d:%02d", minutes, seconds)
     }
 
     private var shouldRenderMarkers: Bool {
