@@ -307,3 +307,83 @@ private struct DragState {
     var startedOnMarker: WaveformMarker?
     var hasDragged: Bool = false
 }
+
+// MARK: - Previews
+
+#Preview("Bars — progress") {
+    WaveformView(
+        summary: .demo(),
+        currentTime: 12,
+        style: .bars(count: 120),
+        colors: WaveformColors(played: .accentColor, unplayed: .secondary.opacity(0.3))
+    )
+    .frame(height: 80)
+    .padding()
+}
+
+#Preview("Mirrored bars — voice memo") {
+    WaveformView(
+        summary: .demo(duration: 18),
+        currentTime: 9,
+        style: .mirroredBars(count: 80),
+        colors: WaveformColors(played: .red, unplayed: .red.opacity(0.25))
+    )
+    .frame(height: 60)
+    .padding()
+}
+
+#Preview("Dancing bars — reactive") {
+    WaveformView(
+        summary: .demo(),
+        currentTime: 10,
+        amplitude: 0.6,
+        style: .dancingBars(count: 32),
+        movement: .reactive(boost: 1.4)
+    )
+    .frame(height: 80)
+    .padding()
+}
+
+#Preview("Line") {
+    WaveformView(
+        summary: .demo(),
+        currentTime: 18,
+        style: .line(thickness: 2)
+    )
+    .frame(height: 80)
+    .padding()
+}
+
+#Preview("Dots") {
+    WaveformView(
+        summary: .demo(),
+        currentTime: 14,
+        style: .dots(count: 60)
+    )
+    .frame(height: 60)
+    .padding()
+}
+
+#Preview("Circular") {
+    WaveformView(
+        summary: .demo(),
+        currentTime: 12,
+        style: .circular(count: 64),
+        colors: WaveformColors(played: .purple, unplayed: .purple.opacity(0.25))
+    )
+    .aspectRatio(1, contentMode: .fit)
+    .frame(width: 220)
+    .padding()
+}
+
+#Preview("Idle — loading shimmer") {
+    WaveformView(
+        summary: .empty,
+        currentTime: 0,
+        style: .bars(count: 80),
+        movement: .idle,
+        colors: WaveformColors(played: .accentColor, unplayed: .gray.opacity(0.2))
+    )
+    .frame(height: 60)
+    .padding()
+}
