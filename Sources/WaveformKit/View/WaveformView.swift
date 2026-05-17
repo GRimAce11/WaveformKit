@@ -72,7 +72,7 @@ public struct WaveformView: View {
                     .animation(.linear(duration: 0.05), value: currentTime)
             }
             if shouldRenderMarkers {
-                MarkersOverlay(markers: markers, duration: summary.duration)
+                MarkersOverlay(markers: markers, duration: summary.duration, style: style)
             }
         }
         .frame(width: width, height: height)
@@ -82,7 +82,6 @@ public struct WaveformView: View {
 
     private var shouldRenderMarkers: Bool {
         guard !markers.isEmpty, summary.duration > 0 else { return false }
-        if case .circular = style { return false }
         return true
     }
 
@@ -229,9 +228,9 @@ public struct WaveformView: View {
         }
     }
 
-    /// Returns the marker nearest to `location` along the X axis within `hitRadius` points,
-    /// or `nil` if none qualify. Region markers report a distance of 0 when the touch is inside.
-    /// Always returns `nil` for `.circular` style (markers are linear-only in this release).
+    /// Returns the marker nearest to `location` within `hitRadius` points (measured as horizontal
+    /// distance for linear styles, arc length for `.circular`), or `nil` if none qualify. Region
+    /// markers report a distance of 0 when the touch is inside their span.
     static func hitTestMarker(
         _ markers: [WaveformMarker],
         at location: CGPoint,
@@ -241,7 +240,9 @@ public struct WaveformView: View {
         hitRadius: CGFloat = 14
     ) -> WaveformMarker? {
         guard duration > 0, size.width > 0, !markers.isEmpty else { return nil }
-        if case .circular = style { return nil }
+        if case .circular = style {
+            return hitTestCircular(markers, at: location, in: size, duration: duration, hitRadius: hitRadius)
+        }
         let widthPerSecond = size.width / CGFloat(duration)
         var best: WaveformMarker?
         var bestDistance: CGFloat = .infinity
@@ -264,6 +265,46 @@ public struct WaveformView: View {
             }
         }
         return best
+    }
+
+    /// Angular hit-test for circular style. Compare arc-length distances along the outer ring.
+    private static func hitTestCircular(
+        _ markers: [WaveformMarker],
+        at location: CGPoint,
+        in size: CGSize,
+        duration: TimeInterval,
+        hitRadius: CGFloat
+    ) -> WaveformMarker? {
+        let side = min(size.width, size.height)
+        let outerR = side / 2
+        guard outerR > 0 else { return nil }
+        let circumference = 2 * .pi * outerR
+        let tapProgress = Self.seekProgress(for: location, in: size, style: .circular())
+        var best: WaveformMarker?
+        var bestDistance: CGFloat = .infinity
+        for m in markers {
+            let startP = m.time / duration
+            let endP = (m.time + m.duration) / duration
+            let arcDistance: CGFloat
+            if m.isRegion, tapProgress >= startP, tapProgress <= endP {
+                arcDistance = 0
+            } else {
+                let dStart = Self.angularDistance(tapProgress, startP) * circumference
+                let dEnd = m.isRegion ? Self.angularDistance(tapProgress, endP) * circumference : .infinity
+                arcDistance = min(dStart, dEnd)
+            }
+            if arcDistance <= hitRadius, arcDistance < bestDistance {
+                best = m
+                bestDistance = arcDistance
+            }
+        }
+        return best
+    }
+
+    /// Minimum distance between two normalized [0, 1] progress values on a circular ring.
+    private static func angularDistance(_ a: Double, _ b: Double) -> CGFloat {
+        let raw = abs(a - b)
+        return CGFloat(min(raw, 1 - raw))
     }
 
     private func resampled(to count: Int) -> [Float] {
