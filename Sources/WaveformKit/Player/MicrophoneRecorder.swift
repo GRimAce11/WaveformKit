@@ -79,6 +79,11 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
     public let binsPerSecond: Double
     public let maximumDuration: TimeInterval?
     public let autoResumeAfterInterruption: Bool
+    /// Soft cap on `summary.amplitudes.count` during a running recording. When exceeded the
+    /// array is halved in place by averaging adjacent pairs — bounded memory at the cost of
+    /// coarser temporal resolution on older parts of the recording. Default `4000` keeps
+    /// memory under ~16 KB even for multi-hour captures.
+    public let maxBins: Int
 
     @ObservationIgnored private let engine = AVAudioEngine()
     @ObservationIgnored private var storage: AmplitudeTapStorage
@@ -97,6 +102,8 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
     @ObservationIgnored private let onInterruption: (@MainActor (MicrophoneInterruption) -> Void)?
     @ObservationIgnored private var interruptionObserver: NSObjectProtocol?
     @ObservationIgnored private var routeObserver: NSObjectProtocol?
+    @ObservationIgnored private var summaryPublishCounter: Int = 0
+    @ObservationIgnored private let summaryPublishEveryNBins: Int
 
     public init(
         bandCount: Int = 32,
@@ -105,6 +112,7 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
         maximumDuration: TimeInterval? = nil,
         outputURL: URL? = nil,
         autoResumeAfterInterruption: Bool = true,
+        maxBins: Int = 4000,
         onInterruption: (@MainActor (MicrophoneInterruption) -> Void)? = nil
     ) {
         self.bandCount = bandCount
@@ -112,9 +120,14 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
         self.maximumDuration = maximumDuration
         self.outputURL = outputURL
         self.autoResumeAfterInterruption = autoResumeAfterInterruption
+        self.maxBins = max(64, maxBins)
         self.onInterruption = onInterruption
         self.pollInterval = 1.0 / max(1, pollRate)
         self.binInterval = 1.0 / max(1, binsPerSecond)
+        // Republish the WaveformSummary ~4 times per second regardless of bin rate. The bar
+        // array is still appended every bin tick (cheap O(1) amortized), but observable summary
+        // updates are throttled to avoid 20 Hz view re-renders during long recordings.
+        self.summaryPublishEveryNBins = max(1, Int((binsPerSecond / 4).rounded()))
         self.bands = [Float](repeating: 0, count: bandCount)
         self.bandEnvelopes = Array(repeating: AmplitudeEnvelope(), count: bandCount)
         self.storage = AmplitudeTapStorage(bandCount: bandCount, sampleRate: 44100)
@@ -152,6 +165,7 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
         pausedAccumulator = 0
         pausedAt = nil
         lastError = nil
+        summaryPublishCounter = 0
 
         let inputNode = engine.inputNode
         let format = inputNode.outputFormat(forBus: 0)
@@ -372,12 +386,38 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
     private func appendBin() {
         guard isRecording, !isPaused else { return }
         amplitudes.append(currentAmplitude)
-        summary = WaveformSummary(
-            amplitudes: amplitudes,
-            duration: currentTime,
-            sampleRate: summary.sampleRate,
-            channelCount: summary.channelCount
-        )
+
+        var didCompact = false
+        if amplitudes.count > maxBins {
+            amplitudes = Self.halveByAveraging(amplitudes)
+            didCompact = true
+        }
+
+        summaryPublishCounter += 1
+        if didCompact || summaryPublishCounter >= summaryPublishEveryNBins {
+            summaryPublishCounter = 0
+            summary = WaveformSummary(
+                amplitudes: amplitudes,
+                duration: currentTime,
+                sampleRate: summary.sampleRate,
+                channelCount: summary.channelCount
+            )
+        }
+    }
+
+    /// Compact a bin array to half its length by averaging adjacent pairs. Used during long
+    /// recordings to keep memory bounded; older bins lose temporal resolution while newer bins
+    /// continue at full resolution until the next compaction cycle.
+    nonisolated static func halveByAveraging(_ input: [Float]) -> [Float] {
+        guard input.count >= 2 else { return input }
+        let pairCount = input.count / 2
+        var out: [Float] = []
+        out.reserveCapacity(pairCount + (input.count.isMultiple(of: 2) ? 0 : 1))
+        for i in 0..<pairCount {
+            out.append((input[2 * i] + input[2 * i + 1]) * 0.5)
+        }
+        if !input.count.isMultiple(of: 2) { out.append(input[input.count - 1]) }
+        return out
     }
 
     /// Runs on an internal AVAudioEngine queue. No main-actor state touched.
