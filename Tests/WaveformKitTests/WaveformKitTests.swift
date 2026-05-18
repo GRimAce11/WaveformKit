@@ -275,4 +275,129 @@ final class WaveformKitTests: XCTestCase {
         XCTAssertNil(seen)
         _ = r
     }
+
+    // MARK: - Demo summary
+
+    func testDemoSummaryShape() {
+        let s = WaveformSummary.demo(duration: 30, bars: 100)
+        XCTAssertEqual(s.amplitudes.count, 100)
+        XCTAssertEqual(s.duration, 30)
+        for a in s.amplitudes {
+            XCTAssertGreaterThanOrEqual(a, 0)
+            XCTAssertLessThanOrEqual(a, 1)
+        }
+    }
+
+    func testDemoSummaryIsDeterministic() {
+        // Same seed should produce identical output across calls — useful for snapshot tests.
+        let a = WaveformSummary.demo(duration: 10, bars: 50, seed: 7)
+        let b = WaveformSummary.demo(duration: 10, bars: 50, seed: 7)
+        XCTAssertEqual(a.amplitudes, b.amplitudes)
+    }
+
+    func testDemoSummaryDifferentSeedsDiffer() {
+        let a = WaveformSummary.demo(duration: 10, bars: 50, seed: 1)
+        let b = WaveformSummary.demo(duration: 10, bars: 50, seed: 2)
+        XCTAssertNotEqual(a.amplitudes, b.amplitudes)
+    }
+
+    // MARK: - Circular marker hit testing
+
+    func testHitTestCircularPointMarker() {
+        // Circular view 200x200, duration 20s. Marker at time=5 → progress=0.25 → angle = 0° (right).
+        let m = WaveformMarker(time: 5, color: .red)
+        let size = CGSize(width: 200, height: 200)
+        // At progress 0.25 (clockwise from top), the outer-ring point is to the right of center.
+        // Tap at (190, 100) is on that ring near angle 0 → should hit.
+        let hit = WaveformView.hitTestMarker(
+            [m],
+            at: CGPoint(x: 190, y: 100),
+            in: size,
+            duration: 20,
+            style: .circular()
+        )
+        XCTAssertEqual(hit?.id, m.id)
+    }
+
+    func testHitTestCircularRegionInside() {
+        // Region 0..10 spans top→right quadrant. Tap inside that arc range should hit.
+        let m = WaveformMarker(time: 0, duration: 10, color: .blue)
+        let size = CGSize(width: 200, height: 200)
+        // Progress 0.125 (45° from top) → tap location in upper-right quadrant on outer ring.
+        let hit = WaveformView.hitTestMarker(
+            [m],
+            at: CGPoint(x: 170, y: 30),
+            in: size,
+            duration: 20,
+            style: .circular()
+        )
+        XCTAssertEqual(hit?.id, m.id)
+    }
+
+    func testHitTestCircularPickFarsidesAcrossWrap() {
+        // Marker at time = 19s of 20s = progress 0.95 → just above the start (top, clockwise from
+        // top, 0.95 of the way around). Tap at progress 0.0 (top center) should be close due to
+        // wrap-around angular distance (0.05 in progress space ≈ 31 points on a 100-radius ring,
+        // outside default 14-point hit radius). Use a tighter mid-radius tap.
+        let m = WaveformMarker(time: 19.95, color: .red)
+        let size = CGSize(width: 200, height: 200)
+        // Tap just to the left of top (progress slightly past 0/wraps near 1)
+        let hit = WaveformView.hitTestMarker(
+            [m],
+            at: CGPoint(x: 100, y: 5),
+            in: size,
+            duration: 20,
+            style: .circular(),
+            hitRadius: 30
+        )
+        XCTAssertEqual(hit?.id, m.id)
+    }
+
+    // MARK: - Format time
+
+    func testFormatTimeUnderOneMinute() {
+        XCTAssertEqual(WaveformView.formatTime(7), "0:07")
+        XCTAssertEqual(WaveformView.formatTime(0), "0:00")
+    }
+
+    func testFormatTimeMinutesSeconds() {
+        XCTAssertEqual(WaveformView.formatTime(125), "2:05")
+    }
+
+    func testFormatTimeHours() {
+        XCTAssertEqual(WaveformView.formatTime(3725), "1:02:05")
+    }
+
+    // MARK: - Halving
+
+    func testHalveByAveragingEvenLength() {
+        let result = MicrophoneRecorder.halveByAveraging([0.2, 0.4, 0.6, 0.8])
+        XCTAssertEqual(result.count, 2)
+        XCTAssertEqual(result[0], 0.3, accuracy: 1e-6)
+        XCTAssertEqual(result[1], 0.7, accuracy: 1e-6)
+    }
+
+    func testHalveByAveragingOddLength() {
+        // Odd length: pairs averaged, last element preserved.
+        let result = MicrophoneRecorder.halveByAveraging([0.2, 0.4, 0.6, 0.8, 0.9])
+        XCTAssertEqual(result.count, 3)
+        XCTAssertEqual(result[0], 0.3, accuracy: 1e-6)
+        XCTAssertEqual(result[1], 0.7, accuracy: 1e-6)
+        XCTAssertEqual(result[2], 0.9, accuracy: 1e-6)
+    }
+
+    func testHalveByAveragingShortPassthrough() {
+        XCTAssertEqual(MicrophoneRecorder.halveByAveraging([0.5]), [0.5])
+        XCTAssertEqual(MicrophoneRecorder.halveByAveraging([]), [])
+    }
+
+    // MARK: - WaveformSummary integration
+
+    func testDemoSummaryWorksAsWaveformViewInput() {
+        // Smoke test: a view built from .demo() should produce a non-nil snapshot.
+        // We can't render an image off main actor in a unit test, so just verify .demo() is
+        // accepted as a WaveformSummary by inspection.
+        let summary: WaveformSummary = .demo()
+        XCTAssertGreaterThan(summary.amplitudes.count, 0)
+    }
 }

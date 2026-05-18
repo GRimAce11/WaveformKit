@@ -11,9 +11,11 @@ A SwiftUI waveform component for music players — six built-in styles, live amp
 - **Six wave styles** — bars, mirrored bars, dancing bars, line, dots, circular
 - **Built-in seek control** — drag-anywhere on linear styles, angular scrubbing on circular
 - **Reactive to playback** — bars dance with live amplitude or real FFT bands
-- **Markers & regions** — overlay chapters / comments / clip regions with tap-to-jump callbacks
+- **Markers & regions** — overlay chapters / comments / clip regions with tap-to-jump callbacks (works on all six styles, including `.circular`)
 - **Live mic recording** — `MicrophoneRecorder` drives the same view API for voice-memo UIs
-- **Works with both players** — `AVPlayer` (streaming + local) and `AVAudioPlayer` (local) via adapters
+- **Three player paths** — `AVPlayer` (streaming + local), `AVAudioPlayer` (local, simple), `AVAudioEnginePlayer` (local + FFT bands)
+- **Accessibility** — VoiceOver swipe-to-scrub with formatted time announcement
+- **Snapshot to image** — render any waveform configuration to a `CGImage` for thumbnails / share sheets
 - **Loading skeleton** — `.idle` movement animates a shimmer (with a placeholder shape if no summary loaded)
 - **Color customization** — solid colors or gradients, played / unplayed split
 - **Disk cache** — repeat opens of the same file are instant
@@ -189,7 +191,9 @@ WaveformView(
 - **Drag** → always seeks; the marker tap only fires when the user releases without dragging.
 - **`onMarkerTap` is optional** — leave it `nil` and markers behave as decoration; the seek gesture treats them as ordinary waveform pixels.
 
-Markers are linear-only in v0.3 — they don't render on `.circular`.
+Markers render on all six styles. For `.circular`, point markers become radial ticks + dots near
+the outer edge and region markers become colored arcs along the bar layer. Hit-testing uses arc
+length so the same `hitRadius` feels consistent between linear and circular.
 
 ## Recording from the microphone
 
@@ -251,7 +255,10 @@ and `recorder.summary` holds the final amplitude bins for playback-time scrubbin
   reuse the running configuration.
 - **macOS entitlements** — sandboxed macOS apps need the Audio Input entitlement
   (`com.apple.security.device.audio-input`).
-- **Background recording** — requires the `audio` value in `UIBackgroundModes`.
+- **Background recording** — for capture that continues when the screen locks or the app is
+  backgrounded, add the `audio` value to your `UIBackgroundModes` array in Info.plist. Without
+  it, iOS suspends the engine on lock and `MicrophoneRecorder.isRecording` stays true while no
+  samples flow — a silent failure.
 
 ### Error handling
 
@@ -294,6 +301,71 @@ let recorder = MicrophoneRecorder(
     }
 )
 ```
+
+## Local-file playback with FFT — `AVAudioEnginePlayer`
+
+`AVAudioPlayer` can't expose PCM so it can't produce FFT spectrum bands. `AVPlayer` works but is
+heavy and streaming-oriented. For the common case — a local audio file with live spectrum bars —
+use `AVAudioEnginePlayer`, which conforms to **both** `WaveformPlayerAdapter` (time/seek/play)
+and `AmplitudeTap` (amplitude/bands) so one object drives the view:
+
+```swift
+let player = try AVAudioEnginePlayer(url: url, bandCount: 32)
+player.play()
+
+WaveformView(
+    summary: summary,
+    currentTime: player.currentTime,
+    amplitude: player.currentAmplitude,
+    bands: player.bands,
+    style: .dancingBars(count: 32),
+    movement: .reactive(),
+    onSeek: { player.seek(to: $0) }
+)
+```
+
+Seek works by stopping the player node, scheduling a segment from the new frame, and resuming —
+the same pattern any `AVAudioEngine`-based player uses.
+
+## Snapshot to image
+
+```swift
+if let cgImage = WaveformView.snapshot(
+    summary: summary,
+    size: CGSize(width: 300, height: 60),
+    style: .mirroredBars(count: 80),
+    colors: WaveformColors(played: .accentColor)
+) {
+    let uiImage = UIImage(cgImage: cgImage)            // iOS / tvOS / visionOS
+    // let nsImage = NSImage(cgImage: cgImage, size: CGSize(width: 300, height: 60))  // macOS
+}
+```
+
+Useful for voice-memo thumbnails, cell-list previews (avoid running a live `Canvas` per row), and
+share-sheet images.
+
+## Accessibility
+
+`WaveformView` is a single adjustable element for VoiceOver. The value is announced as
+`"0:42 of 3:14"`; swipe up/down moves by 5 % of duration and routes through `onSeek`. Marker count
+is appended to the label when markers are present. Nothing to wire — it's on by default.
+
+## Loading skeleton & previews
+
+```swift
+#Preview {
+    WaveformView(
+        summary: .demo(duration: 30),
+        currentTime: 12,
+        style: .bars(count: 120)
+    )
+    .frame(height: 80)
+    .padding()
+}
+```
+
+`WaveformSummary.demo(duration:bars:seed:)` produces an envelope-shaped sample summary so previews
+and screenshots render meaningful content without a real audio file.
 
 ## FFT spectrum bands
 
@@ -365,10 +437,14 @@ AudioSource ──┐
 
 ## Known limitations
 
-- `AVAudioPlayer` cannot produce FFT bands (Apple limitation, not a WaveformKit one).
-- `WaveformMarker`s don't render on `.circular` style. Angular tick rendering is on the roadmap.
+- `AVAudioPlayer` cannot produce FFT bands (Apple limitation). Use `AVAudioEnginePlayer` for the
+  local-file + FFT combination.
 - `AVPlayerAmplitudeTap` falls back gracefully on `Float32` and `Int16` PCM. Less common sample
   formats (Int24, Int32, big-endian variants) are skipped — bands/amplitude will read 0.
+- iOS 17+ / macOS 14+ floor (the `@Observable` macro). An iOS 16 backport is on the roadmap.
+- Long recordings: `MicrophoneRecorder` halves the bar array when it exceeds `maxBins` (default
+  4000). Memory is bounded; temporal resolution on older parts of the recording degrades after
+  each halving cycle.
 
 ## License
 

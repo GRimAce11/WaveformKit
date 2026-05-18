@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-17
+
+### Added
+- **`AVAudioEnginePlayer`** — `@Observable @MainActor` local-file player that conforms to both
+  `WaveformPlayerAdapter` and `AmplitudeTap`. Plays via `AVAudioEngine` + `AVAudioPlayerNode`,
+  installs a render-thread tap to drive real FFT spectrum bands. Unblocks "local file + FFT" use
+  cases that `AVAudioPlayer` could never serve and `AVPlayer` was overkill for.
+- **VoiceOver support** on `WaveformView` — adjustable trait, formatted "X:XX of Y:YY" value,
+  swipe-up/down scrubs by 5 % of duration, marker count announced in the label.
+- **`WaveformView.snapshot(...)`** — `ImageRenderer`-backed static method returning a `CGImage`
+  for share-sheet thumbnails, cell-list previews, and App Store screenshots.
+- **`WaveformSummary.demo(duration:bars:seed:)`** — deterministic synthetic summary so devs can
+  preview `WaveformView` without wiring an audio file.
+- **`#Preview` gallery** for every style + an idle/markers showcase, so Xcode previews show
+  realistic output immediately.
+- **Circular markers** — `MarkersOverlay` now renders point markers as radial ticks + dot and
+  region markers as colored arcs on `.circular`. `WaveformView.hitTestMarker` gained an arc-length
+  hit-test that wraps correctly across 12-o'clock.
+- **Bounded recording memory** — `MicrophoneRecorder` gains `maxBins:` (default `4000`). When the
+  in-progress amplitude array exceeds the cap it is halved in place by averaging adjacent pairs,
+  bounding memory regardless of recording length. `summary` republishes are throttled to ~4 Hz so
+  long captures stop reallocating 20 times per second.
+
+### Fixed
+- `MicrophoneRecorder` previously rebuilt `WaveformSummary` on every bin (20 Hz), causing
+  quadratic copy work over long recordings. Now throttled.
+
 ## [0.3.1] - 2026-05-15
 
 ### Added
