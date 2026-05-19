@@ -47,7 +47,7 @@ struct AsyncLoadingScreen: View {
 
             if case .loading(let p) = loader.state {
                 ProgressView(value: p)
-                    .tint(.accentColor)
+                    .tint(Color.accentColor)
                     .animation(.linear(duration: 0.1), value: p)
             }
         }

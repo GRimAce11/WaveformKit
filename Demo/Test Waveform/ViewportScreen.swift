@@ -98,7 +98,7 @@ struct ViewportScreen: View {
                         }
                     }
                     .buttonStyle(.bordered)
-                    .tint(abs(viewport.zoomFactor - factor) < 0.1 ? .accentColor : .secondary)
+                    .tint(abs(viewport.zoomFactor - factor) < 0.1 ? Color.accentColor : Color.secondary)
                 }
             }
         }
