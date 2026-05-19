@@ -93,6 +93,65 @@ public struct WaveformView: View {
                 break
             }
         }
+        .accessibilityChildren {
+            markerAccessibilityChildren
+        }
+    }
+
+    /// Invisible accessibility-only overlay that exposes each `WaveformMarker` as a focusable
+    /// VoiceOver element. Positioned at the marker's visual location so "explore by touch"
+    /// works; default action invokes `onMarkerTap`.
+    @ViewBuilder
+    private var markerAccessibilityChildren: some View {
+        if !markers.isEmpty, summary.duration > 0 {
+            GeometryReader { geo in
+                ForEach(markers) { marker in
+                    let position = markerAccessibilityPosition(marker, in: geo.size)
+                    Color.clear
+                        .frame(width: 30, height: 30)
+                        .position(position)
+                        .accessibilityElement()
+                        .accessibilityLabel(Self.markerAccessibilityLabel(for: marker))
+                        .accessibilityAddTraits(onMarkerTap != nil ? .isButton : [])
+                        .accessibilityAction {
+                            onMarkerTap?(marker)
+                        }
+                }
+            }
+        }
+    }
+
+    private func markerAccessibilityPosition(_ marker: WaveformMarker, in size: CGSize) -> CGPoint {
+        guard summary.duration > 0 else { return .zero }
+        if case .circular = style {
+            let side = min(size.width, size.height)
+            let outerR = side / 2
+            let center = CGPoint(x: size.width / 2, y: size.height / 2)
+            let progress = marker.time + marker.duration / 2
+            let angle = -.pi / 2 + (progress / summary.duration) * 2 * .pi
+            return CGPoint(x: center.x + cos(angle) * outerR, y: center.y + sin(angle) * outerR)
+        }
+        let centerTime = marker.time + marker.duration / 2
+        let x = CGFloat(centerTime / summary.duration) * size.width
+        return CGPoint(x: x, y: size.height / 2)
+    }
+
+    /// Public so apps with custom accessibility wrappers can reuse the same phrasing.
+    public static func markerAccessibilityLabel(for marker: WaveformMarker) -> String {
+        let startStr = formatTime(marker.time)
+        let name = marker.label?.trimmingCharacters(in: .whitespaces)
+        if marker.isRegion {
+            let endStr = formatTime(marker.time + marker.duration)
+            if let name, !name.isEmpty {
+                return "\(name), \(startStr) to \(endStr)"
+            }
+            return "Region, \(startStr) to \(endStr)"
+        } else {
+            if let name, !name.isEmpty {
+                return "\(name), at \(startStr)"
+            }
+            return "Marker at \(startStr)"
+        }
     }
 
     private var accessibilityLabelText: String {
