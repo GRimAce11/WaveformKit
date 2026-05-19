@@ -182,21 +182,22 @@ struct OscilloscopeRenderer: WaveformRenderer {
             return path
         }
 
-        // Draw played portion
+        // GraphicsContext is a value type — copying it before clipping gives each copy its own
+        // clip region without needing a resetClip() call (which isn't part of the SwiftUI API).
         if showsProgress {
-            context.clip(to: Path(CGRect(x: 0, y: 0, width: progressX, height: size.height)))
-        }
-        context.stroke(makePath(flipped: false), with: .color(colors.played), lineWidth: 1.5)
-        context.stroke(makePath(flipped: true),  with: .color(colors.played.opacity(0.4)), lineWidth: 1)
+            var playedCtx = context
+            playedCtx.clip(to: Path(CGRect(x: 0, y: 0, width: progressX, height: size.height)))
+            playedCtx.stroke(makePath(flipped: false), with: .color(colors.played), lineWidth: 1.5)
+            playedCtx.stroke(makePath(flipped: true),  with: .color(colors.played.opacity(0.4)), lineWidth: 1)
 
-        if showsProgress {
-            context.resetClip()
-            let unplayed = Path(CGRect(x: progressX, y: 0,
-                                      width: size.width - progressX, height: size.height))
-            context.clip(to: unplayed)
-            context.stroke(makePath(flipped: false), with: .color(colors.unplayed), lineWidth: 1.5)
-            context.stroke(makePath(flipped: true),  with: .color(colors.unplayed.opacity(0.4)), lineWidth: 1)
-            context.resetClip()
+            var unplayedCtx = context
+            unplayedCtx.clip(to: Path(CGRect(x: progressX, y: 0,
+                                             width: size.width - progressX, height: size.height)))
+            unplayedCtx.stroke(makePath(flipped: false), with: .color(colors.unplayed), lineWidth: 1.5)
+            unplayedCtx.stroke(makePath(flipped: true),  with: .color(colors.unplayed.opacity(0.4)), lineWidth: 1)
+        } else {
+            context.stroke(makePath(flipped: false), with: .color(colors.played), lineWidth: 1.5)
+            context.stroke(makePath(flipped: true),  with: .color(colors.played.opacity(0.4)), lineWidth: 1)
         }
     }
 }
@@ -243,17 +244,19 @@ struct MirrorFillRenderer: WaveformRenderer {
             endPoint: CGPoint(x: 0, y: size.height)
         )
 
+        let unplayedGrad = Gradient(colors: [colors.unplayed, colors.unplayed.opacity(0.05)])
+        let unplayedShading = GraphicsContext.Shading.linearGradient(
+            unplayedGrad, startPoint: .zero, endPoint: CGPoint(x: 0, y: size.height))
+
         if showsProgress {
-            context.clip(to: Path(CGRect(x: 0, y: 0, width: progressX, height: size.height)))
-            context.fill(fill, with: shading)
-            context.resetClip()
-            let unplayedGrad = Gradient(colors: [colors.unplayed, colors.unplayed.opacity(0.05)])
-            let unplayedShading = GraphicsContext.Shading.linearGradient(
-                unplayedGrad, startPoint: .zero, endPoint: CGPoint(x: 0, y: size.height))
-            context.clip(to: Path(CGRect(x: progressX, y: 0,
-                                         width: size.width - progressX, height: size.height)))
-            context.fill(fill, with: unplayedShading)
-            context.resetClip()
+            var playedCtx = context
+            playedCtx.clip(to: Path(CGRect(x: 0, y: 0, width: progressX, height: size.height)))
+            playedCtx.fill(fill, with: shading)
+
+            var unplayedCtx = context
+            unplayedCtx.clip(to: Path(CGRect(x: progressX, y: 0,
+                                              width: size.width - progressX, height: size.height)))
+            unplayedCtx.fill(fill, with: unplayedShading)
         } else {
             context.fill(fill, with: shading)
         }

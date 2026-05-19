@@ -41,7 +41,7 @@ extension WaveformStyle: Equatable {
     }
 }
 
-public enum WaveformMovement: Sendable, Equatable {
+public enum WaveformMovement: Sendable, Equatable, Hashable {
     /// Static waveform; played portion is colored differently.
     case progress
     /// Bars/shapes scale by `1 + boost * amplitude`. No progress fill.

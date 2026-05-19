@@ -31,7 +31,7 @@ struct PlaybackScreen: View {
             isPresented: $showingFilePicker,
             allowedContentTypes: [.audio, .mp3, .mpeg4Audio, .wav, .aiff]
         ) { result in
-            if case .success(let urls) = result, let url = urls.first {
+            if case .success(let url) = result {
                 loadUserFile(url)
             }
         }
@@ -96,7 +96,7 @@ struct PlaybackScreen: View {
                 } label: {
                     Image(systemName: adapter.isPlaying ? "pause.circle.fill" : "play.circle.fill")
                         .font(.system(size: 56))
-                        .foregroundStyle(.accentColor)
+                        .foregroundStyle(Color.accentColor)
                 }
 
                 VStack(alignment: .leading, spacing: 2) {
