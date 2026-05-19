@@ -613,6 +613,251 @@ final class WaveformKitTests: XCTestCase {
             String(format: "push(512) exceeded 20 µs budget: %.2f µs/call", usPerCall))
     }
 
+    // MARK: - WaveformSummary identity (Phase 2)
+
+    func testSummaryIDIsUniquePerInstance() {
+        let a = WaveformSummary(amplitudes: [0.5], duration: 1, sampleRate: 44100, channelCount: 1)
+        let b = WaveformSummary(amplitudes: [0.5], duration: 1, sampleRate: 44100, channelCount: 1)
+        XCTAssertNotEqual(a.id, b.id, "Two separate init() calls must produce distinct UUIDs")
+    }
+
+    func testSummaryIDIsStableOnSameInstance() {
+        let s = WaveformSummary(amplitudes: [0.1, 0.9], duration: 5, sampleRate: 44100, channelCount: 1)
+        XCTAssertEqual(s.id, s.id, "id must be stable on the same instance")
+    }
+
+    func testSummaryEquatableIgnoresID() {
+        // Two instances with identical data but necessarily different UUIDs must be equal.
+        let a = WaveformSummary(amplitudes: [0.1, 0.5, 0.9], duration: 10, sampleRate: 44100, channelCount: 1)
+        let b = WaveformSummary(amplitudes: [0.1, 0.5, 0.9], duration: 10, sampleRate: 44100, channelCount: 1)
+        XCTAssertNotEqual(a.id, b.id)
+        XCTAssertEqual(a, b, "== must not compare id")
+    }
+
+    func testSummaryDecodesWithFreshID() throws {
+        let original = WaveformSummary(amplitudes: [0.2, 0.8], duration: 3, sampleRate: 48000, channelCount: 2)
+        let data     = try JSONEncoder().encode(original)
+        let decoded  = try JSONDecoder().decode(WaveformSummary.self, from: data)
+        XCTAssertEqual(original, decoded, "Round-trip must preserve data equality")
+        XCTAssertNotEqual(original.id, decoded.id, "Decoded instance must have a fresh UUID")
+        XCTAssertFalse(data.description.contains(original.id.uuidString),
+                       "id must not appear in the encoded JSON")
+    }
+
+    // MARK: - WaveformState (Phase 2)
+
+    func testWaveformStateIdleHasNilSummary() {
+        let s: WaveformState = .idle
+        XCTAssertNil(s.summary)
+        XCTAssertFalse(s.isLoading)
+        XCTAssertNil(s.loadingProgress)
+        XCTAssertNil(s.error)
+    }
+
+    func testWaveformStateLoadingProperties() {
+        let s: WaveformState = .loading(progress: 0.42)
+        XCTAssertNil(s.summary)
+        XCTAssertTrue(s.isLoading)
+        XCTAssertEqual(s.loadingProgress ?? -1, 0.42, accuracy: 1e-6)
+        XCTAssertNil(s.error)
+    }
+
+    func testWaveformStateLoadedProperties() {
+        let summary = WaveformSummary.demo(bars: 10)
+        let s: WaveformState = .loaded(summary)
+        XCTAssertEqual(s.summary?.id, summary.id)
+        XCTAssertFalse(s.isLoading)
+        XCTAssertNil(s.loadingProgress)
+        XCTAssertNil(s.error)
+    }
+
+    func testWaveformStateFailedProperties() {
+        struct FakeError: Error {}
+        let s: WaveformState = .failed(FakeError())
+        XCTAssertNil(s.summary)
+        XCTAssertFalse(s.isLoading)
+        XCTAssertNil(s.loadingProgress)
+        XCTAssertNotNil(s.error)
+    }
+
+    // MARK: - WaveformLoader (Phase 2)
+
+    @MainActor
+    func testWaveformLoaderInitialStateIsIdle() {
+        let loader = WaveformLoader()
+        XCTAssertFalse(loader.state.isLoading)
+        XCTAssertNil(loader.state.summary)
+    }
+
+    @MainActor
+    func testWaveformLoaderSetInjectsSummaryDirectly() {
+        let loader  = WaveformLoader()
+        let summary = WaveformSummary.demo(bars: 20)
+        loader.set(summary)
+        XCTAssertEqual(loader.state.summary?.id, summary.id)
+    }
+
+    @MainActor
+    func testWaveformLoaderCancelFromIdleIsSafe() {
+        let loader = WaveformLoader()
+        loader.cancel()  // must not crash
+        XCTAssertFalse(loader.state.isLoading)
+    }
+
+    @MainActor
+    func testWaveformLoaderRetryFromIdleIsNoOp() {
+        let loader = WaveformLoader()
+        loader.retry()   // must not crash; no lastURL stored
+        XCTAssertFalse(loader.state.isLoading)
+    }
+
+    // MARK: - WaveformViewport (Phase 2)
+
+    func testViewportInitShowsFullRange() {
+        let vp = WaveformViewport(duration: 120)
+        XCTAssertEqual(vp.visibleRange.lowerBound, 0, accuracy: 1e-9)
+        XCTAssertEqual(vp.visibleRange.upperBound, 120, accuracy: 1e-9)
+        XCTAssertEqual(vp.zoomFactor, 1, accuracy: 1e-9)
+        XCTAssertFalse(vp.isZoomed)
+    }
+
+    func testViewportZoomDoublesZoomFactor() {
+        var vp = WaveformViewport(duration: 120)
+        vp.zoom(to: 2, anchor: 0.5)
+        XCTAssertEqual(vp.zoomFactor, 2, accuracy: 0.01)
+        XCTAssertTrue(vp.isZoomed)
+        // Visible span should be half the duration.
+        let span = vp.visibleRange.upperBound - vp.visibleRange.lowerBound
+        XCTAssertEqual(span, 60, accuracy: 0.1)
+    }
+
+    func testViewportZoomCentredOnAnchor() {
+        var vp = WaveformViewport(duration: 100)
+        // Zoom 4× centred on the right edge of the current range (anchor = 1.0).
+        vp.zoom(to: 4, anchor: 1.0)
+        let span = vp.visibleRange.upperBound - vp.visibleRange.lowerBound
+        XCTAssertEqual(span, 25, accuracy: 0.1)
+        // The right boundary should stay at 100 (clamped to duration).
+        XCTAssertEqual(vp.visibleRange.upperBound, 100, accuracy: 0.1)
+    }
+
+    func testViewportPanShiftsRange() {
+        var vp = WaveformViewport(duration: 100)
+        vp.zoom(to: 4)          // span = 25 s, centred
+        let before = vp.visibleRange.lowerBound
+        vp.pan(by: 10)
+        XCTAssertEqual(vp.visibleRange.lowerBound, before + 10, accuracy: 0.1)
+    }
+
+    func testViewportPanClampsAtEnd() {
+        var vp = WaveformViewport(duration: 60)
+        vp.zoom(to: 2)          // span = 30 s
+        vp.pan(by: 1000)        // try to pan way past the end
+        XCTAssertEqual(vp.visibleRange.upperBound, 60, accuracy: 0.1)
+    }
+
+    func testViewportPanClampsAtStart() {
+        var vp = WaveformViewport(duration: 60)
+        vp.zoom(to: 2)
+        vp.pan(by: -1000)
+        XCTAssertEqual(vp.visibleRange.lowerBound, 0, accuracy: 0.1)
+    }
+
+    func testViewportResetZoom() {
+        var vp = WaveformViewport(duration: 90)
+        vp.zoom(to: 5)
+        XCTAssertTrue(vp.isZoomed)
+        vp.resetZoom()
+        XCTAssertFalse(vp.isZoomed)
+        XCTAssertEqual(vp.zoomFactor, 1, accuracy: 1e-9)
+    }
+
+    func testViewportVisibleIndicesFullRange() {
+        let vp = WaveformViewport(duration: 30)
+        let indices = vp.visibleIndices(totalBars: 200)
+        XCTAssertEqual(indices, 0..<200)
+    }
+
+    func testViewportVisibleIndicesZoomed() {
+        var vp = WaveformViewport(duration: 100)
+        // Show only the first 50 % of the waveform.
+        vp.visibleRange = 0...50
+        let indices = vp.visibleIndices(totalBars: 200)
+        // Normalised range is [0, 0.5], so we expect bars 0..<100.
+        XCTAssertEqual(indices.lowerBound, 0)
+        XCTAssertLessThanOrEqual(indices.upperBound, 101)  // allow ±1 for rounding
+        XCTAssertGreaterThanOrEqual(indices.upperBound, 99)
+    }
+
+    func testViewportNormalisedRange() {
+        var vp = WaveformViewport(duration: 200)
+        vp.visibleRange = 50...150
+        let norm = vp.normalizedRange
+        XCTAssertEqual(norm.lowerBound, 0.25, accuracy: 1e-9)
+        XCTAssertEqual(norm.upperBound, 0.75, accuracy: 1e-9)
+    }
+
+    func testViewportTimeForVisibleProgress() {
+        var vp = WaveformViewport(duration: 100)
+        vp.visibleRange = 20...60
+        let t = vp.time(forVisibleProgress: 0.5)
+        XCTAssertEqual(t, 40, accuracy: 1e-9)  // midpoint of [20, 60]
+    }
+
+    func testViewportVisibleProgressForTime() {
+        var vp = WaveformViewport(duration: 100)
+        vp.visibleRange = 20...60
+        XCTAssertEqual(vp.visibleProgress(for: 20) ?? -1, 0,   accuracy: 1e-9)
+        XCTAssertEqual(vp.visibleProgress(for: 60) ?? -1, 1,   accuracy: 1e-9)
+        XCTAssertEqual(vp.visibleProgress(for: 40) ?? -1, 0.5, accuracy: 1e-9)
+        XCTAssertNil(vp.visibleProgress(for: 10), "Time outside visible range should return nil")
+        XCTAssertNil(vp.visibleProgress(for: 80), "Time outside visible range should return nil")
+    }
+
+    // MARK: - resampleAmplitudes (Phase 2)
+
+    func testResampleToSameCount() {
+        let src: [Float] = [0.1, 0.2, 0.3, 0.4]
+        let result = resampleAmplitudes(src: src, startIdx: 0, endIdx: 4, targetCount: 4)
+        XCTAssertEqual(result, src)
+    }
+
+    func testResampleDownsample() {
+        // 4 bins → 2 bins: each output is mean of 2 input bins.
+        let src: [Float] = [0.2, 0.4, 0.6, 0.8]
+        let result = resampleAmplitudes(src: src, startIdx: 0, endIdx: 4, targetCount: 2)
+        XCTAssertEqual(result.count, 2)
+        XCTAssertEqual(result[0], 0.3, accuracy: 1e-5)
+        XCTAssertEqual(result[1], 0.7, accuracy: 1e-5)
+    }
+
+    func testResampleUpsample() {
+        // 2 bins → 4 bins: each input bin maps to 2 output bins.
+        let src: [Float] = [0.2, 0.8]
+        let result = resampleAmplitudes(src: src, startIdx: 0, endIdx: 2, targetCount: 4)
+        XCTAssertEqual(result.count, 4)
+        // First two outputs come from bin 0 (0.2), last two from bin 1 (0.8).
+        XCTAssertEqual(result[0], 0.2, accuracy: 1e-5)
+        XCTAssertEqual(result[1], 0.2, accuracy: 1e-5)
+        XCTAssertEqual(result[2], 0.8, accuracy: 1e-5)
+        XCTAssertEqual(result[3], 0.8, accuracy: 1e-5)
+    }
+
+    func testResampleViewportSlice() {
+        let src: [Float] = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+        // Extract bars 2..<4 (values 0.3, 0.4) and resample to 2 bars.
+        let result = resampleAmplitudes(src: src, startIdx: 2, endIdx: 4, targetCount: 2)
+        XCTAssertEqual(result.count, 2)
+        XCTAssertEqual(result[0], 0.3, accuracy: 1e-5)
+        XCTAssertEqual(result[1], 0.4, accuracy: 1e-5)
+    }
+
+    func testResampleEmptySliceReturnsEmpty() {
+        let src: [Float] = [0.5, 0.5, 0.5]
+        XCTAssertEqual(resampleAmplitudes(src: src, startIdx: 2, endIdx: 2, targetCount: 4), [])
+        XCTAssertEqual(resampleAmplitudes(src: src, startIdx: 0, endIdx: 3, targetCount: 0), [])
+    }
+
     // MARK: - AudioInterruption shared type
 
     func testMicrophoneInterruptionIsAliasOfAudioInterruption() {

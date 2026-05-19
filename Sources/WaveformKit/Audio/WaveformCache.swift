@@ -64,20 +64,6 @@ public enum WaveformCache {
     }
 }
 
-/// Convenience loader that hits the disk cache before decoding.
-public enum WaveformLoader {
-    public static func load(
-        url: URL,
-        targetBars: Int = 200,
-        useCache: Bool = true
-    ) async throws -> WaveformSummary {
-        if useCache, let cached = WaveformCache.load(url: url, targetBars: targetBars) {
-            return cached
-        }
-        let summary = try await AudioDecoder.summarize(url: url, targetBars: targetBars)
-        if useCache {
-            WaveformCache.save(summary, url: url, targetBars: targetBars)
-        }
-        return summary
-    }
-}
+// WaveformLoader (instance + static API) has moved to WaveformLoader.swift.
+// The static WaveformLoader.load(url:targetBars:useCache:) convenience method
+// is preserved there with the same signature for source compatibility.

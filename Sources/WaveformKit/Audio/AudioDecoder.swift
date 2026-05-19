@@ -14,9 +14,13 @@ public enum AudioDecoder {
     /// - Parameters:
     ///   - url: Local file URL of the audio asset.
     ///   - targetBars: Number of amplitude bins to produce. Larger = more detail, more memory.
+    ///   - onProgress: Optional callback fired on every decoded bar with an estimated
+    ///                 progress in [0, 1].  Called from the decoder's execution context
+    ///                 (not necessarily the main thread); dispatch to MainActor if needed.
     public static func summarize(
         url: URL,
-        targetBars: Int = 200
+        targetBars: Int = 200,
+        onProgress: (@Sendable (Double) -> Void)? = nil
     ) async throws -> WaveformSummary {
         let asset = AVURLAsset(url: url)
         let duration = try await asset.load(.duration).seconds
@@ -90,6 +94,9 @@ public enum AudioDecoder {
                 } ?? 0
                 amplitudes.append(rms)
                 consumed += elementsPerBar
+                // Estimated progress: bars decoded / target.  Cap at 0.99 so the caller
+                // knows 1.0 is reserved for the final "all done" signal below.
+                onProgress?(min(0.99, Double(amplitudes.count) / Double(targetBars)))
             }
 
             if consumed > elementsPerBar * 8 {
@@ -112,6 +119,7 @@ public enum AudioDecoder {
             } ?? 0
             amplitudes.append(rms)
         }
+        onProgress?(1.0)   // signal decode complete
 
         if reader.status == .failed {
             throw AudioDecoderError.readFailed

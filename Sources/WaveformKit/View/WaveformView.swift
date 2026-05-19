@@ -23,10 +23,14 @@ public struct WaveformView: View {
     private let movement: WaveformMovement
     private let colors: WaveformColors
     private let markers: [WaveformMarker]
+    private let viewportBinding: Binding<WaveformViewport>?
     private let onSeek: ((TimeInterval) -> Void)?
     private let onMarkerTap: ((WaveformMarker) -> Void)?
 
     @State private var dragState = DragState()
+    /// Per-view-identity cache for resampled amplitude arrays.
+    /// Lives in @State so SwiftUI preserves the same instance across re-renders.
+    @State private var resampleCache = ResampleCache()
 
     public init(
         summary: WaveformSummary,
@@ -37,19 +41,21 @@ public struct WaveformView: View {
         movement: WaveformMovement = .progress,
         colors: WaveformColors = WaveformColors(),
         markers: [WaveformMarker] = [],
+        viewport: Binding<WaveformViewport>? = nil,
         onSeek: ((TimeInterval) -> Void)? = nil,
         onMarkerTap: ((WaveformMarker) -> Void)? = nil
     ) {
-        self.summary = summary
-        self.currentTime = currentTime
-        self.amplitude = amplitude
-        self.bands = bands
-        self.style = style
-        self.movement = movement
-        self.colors = colors
-        self.markers = markers
-        self.onSeek = onSeek
-        self.onMarkerTap = onMarkerTap
+        self.summary        = summary
+        self.currentTime    = currentTime
+        self.amplitude      = amplitude
+        self.bands          = bands
+        self.style          = style
+        self.movement       = movement
+        self.colors         = colors
+        self.markers        = markers
+        self.viewportBinding = viewport
+        self.onSeek         = onSeek
+        self.onMarkerTap    = onMarkerTap
     }
 
     public var body: some View {
@@ -289,6 +295,15 @@ public struct WaveformView: View {
                 barWidth: barWidth,
                 colors: colors
             )
+        case let .custom(renderer, barCount):
+            CustomRendererView(
+                renderer: renderer,
+                amplitudes: resampled(to: barCount),
+                progress: activeProgress,
+                amplitudeScale: amplitudeScale,
+                showsProgress: activeShowsProgress,
+                colors: colors
+            )
         }
     }
 
@@ -302,6 +317,10 @@ public struct WaveformView: View {
 
     private var progress: Double {
         guard summary.duration > 0 else { return 0 }
+        // When a viewport is active and zoomed, progress is relative to the visible span.
+        if let vp = viewportBinding?.wrappedValue, vp.isZoomed {
+            return vp.visibleProgress(for: currentTime) ?? (currentTime < vp.visibleRange.lowerBound ? 0 : 1)
+        }
         return min(1, max(0, currentTime / summary.duration))
     }
 
@@ -337,7 +356,14 @@ public struct WaveformView: View {
                 if dragState.startedOnMarker != nil && !dragState.hasDragged { return }
 
                 let p = Self.seekProgress(for: value.location, in: size, style: style)
-                onSeek?(p * summary.duration)
+                // Map the normalised seek position to absolute time, respecting any active viewport.
+                let seekTime: TimeInterval
+                if let vp = viewportBinding?.wrappedValue, vp.isZoomed {
+                    seekTime = vp.time(forVisibleProgress: p)
+                } else {
+                    seekTime = p * summary.duration
+                }
+                onSeek?(seekTime)
             }
             .onEnded { _ in
                 if let marker = dragState.startedOnMarker, !dragState.hasDragged {
@@ -444,25 +470,48 @@ public struct WaveformView: View {
         return CGFloat(min(raw, 1 - raw))
     }
 
+    /// Returns resampled amplitudes for the current viewport and bar count.
+    ///
+    /// Results are cached in `resampleCache` keyed by (summaryID, count, visibleSlice).
+    /// Under reactive or dancing-bars movement (30–60 Hz re-renders) this eliminates
+    /// the per-frame `[Float]` allocation that the original uncached implementation incurred.
     private func resampled(to count: Int) -> [Float] {
         let src = summary.amplitudes
-        if src.isEmpty {
+        guard !src.isEmpty else {
             if case .idle = movement { return Self.placeholderAmplitudes(count: count) }
             return []
         }
         guard count > 0 else { return [] }
-        if src.count == count { return src }
-        var out: [Float] = []
-        out.reserveCapacity(count)
-        let stride = Double(src.count) / Double(count)
-        for i in 0..<count {
-            let start = Int(Double(i) * stride)
-            let end = max(start + 1, min(src.count, Int(Double(i + 1) * stride)))
-            let slice = src[start..<end]
-            let sum = slice.reduce(0, +)
-            out.append(sum / Float(slice.count))
+
+        // Determine which slice of the amplitude array is currently visible.
+        // Full range when no viewport is set or zoom factor == 1.
+        let startIdx: Int
+        let endIdx: Int
+        if let vp = viewportBinding?.wrappedValue, vp.isZoomed {
+            let range = vp.visibleIndices(totalBars: src.count)
+            startIdx = range.lowerBound
+            endIdx   = range.upperBound
+        } else {
+            startIdx = 0
+            endIdx   = src.count
         }
-        return out
+        guard startIdx < endIdx else { return [] }
+
+        if let cached = resampleCache.get(
+            summaryID: summary.id, count: count,
+            startIdx: startIdx, endIdx: endIdx
+        ) {
+            return cached
+        }
+
+        let result = resampleAmplitudes(
+            src: src, startIdx: startIdx, endIdx: endIdx, targetCount: count
+        )
+        resampleCache.set(
+            result, summaryID: summary.id, count: count,
+            startIdx: startIdx, endIdx: endIdx
+        )
+        return result
     }
 
     /// Rolling sinusoidal placeholder used when `.idle` is requested with no loaded summary, so
@@ -484,6 +533,103 @@ private struct DragState {
     var checkedFirstTouch: Bool = false
     var startedOnMarker: WaveformMarker?
     var hasDragged: Bool = false
+}
+
+// MARK: - WaveformLoader convenience init
+
+extension WaveformView {
+    /// Initialise a `WaveformView` driven directly by a `WaveformLoader`.
+    ///
+    /// While `loader.state` is `.idle` or `.loading`, the view renders a skeleton shimmer
+    /// (`.idle` movement) so the layout placeholder has the correct size immediately.
+    /// Once the summary is available (`.loaded`) the view transitions to the requested
+    /// `movement` with a SwiftUI animation.
+    ///
+    /// Combine with `.waveformStateOverlay(_:)` to show a progress bar or error UI:
+    ///
+    /// ```swift
+    /// WaveformView(loader: loader, currentTime: player.currentTime, onSeek: { ... })
+    ///     .waveformStateOverlay(loader.state)
+    /// ```
+    public init(
+        loader: WaveformLoader,
+        currentTime: TimeInterval,
+        amplitude: Float = 0,
+        bands: [Float] = [],
+        style: WaveformStyle = .bars(),
+        movement: WaveformMovement = .progress,
+        colors: WaveformColors = WaveformColors(),
+        markers: [WaveformMarker] = [],
+        viewport: Binding<WaveformViewport>? = nil,
+        onSeek: ((TimeInterval) -> Void)? = nil,
+        onMarkerTap: ((WaveformMarker) -> Void)? = nil
+    ) {
+        switch loader.state {
+        case .loaded(let summary):
+            self.init(
+                summary: summary, currentTime: currentTime,
+                amplitude: amplitude, bands: bands,
+                style: style, movement: movement, colors: colors,
+                markers: markers, viewport: viewport,
+                onSeek: onSeek, onMarkerTap: onMarkerTap
+            )
+        default:
+            // Not yet loaded — show skeleton shimmer with correct geometry.
+            self.init(
+                summary: .empty, currentTime: 0,
+                amplitude: amplitude, bands: bands,
+                style: style, movement: .idle, colors: colors
+            )
+        }
+    }
+}
+
+// MARK: - waveformStateOverlay modifier
+
+extension View {
+    /// Overlays loading-progress and error UI on any view based on a `WaveformState`.
+    ///
+    /// - A `.loading(progress:)` state with `progress > 0.02` shows a thin progress bar
+    ///   anchored to the bottom edge, animated via SwiftUI's `.linear` timing.
+    /// - A `.failed` state shows a centred icon + message using `.regularMaterial` fill.
+    /// - All other states leave the view unchanged.
+    ///
+    /// ```swift
+    /// WaveformView(loader: loader, currentTime: 0)
+    ///     .waveformStateOverlay(loader.state)
+    /// ```
+    @ViewBuilder
+    public func waveformStateOverlay(_ state: WaveformState) -> some View {
+        switch state {
+        case .failed(let error):
+            overlay {
+                ZStack {
+                    Rectangle().fill(.regularMaterial)
+                    VStack(spacing: 6) {
+                        Image(systemName: "waveform.slash")
+                            .font(.headline)
+                        Text(error.localizedDescription)
+                            .font(.caption2)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 8)
+                    }
+                    .foregroundStyle(.secondary)
+                }
+            }
+        case .loading(let progress) where progress > 0.02:
+            overlay(alignment: .bottom) {
+                GeometryReader { geo in
+                    Rectangle()
+                        .fill(.tint.opacity(0.7))
+                        .frame(width: geo.size.width * CGFloat(progress), height: 2)
+                        .animation(.linear(duration: 0.08), value: progress)
+                }
+                .frame(height: 2)
+            }
+        default:
+            self
+        }
+    }
 }
 
 // MARK: - Previews
