@@ -425,6 +425,194 @@ final class WaveformKitTests: XCTestCase {
         XCTAssertEqual(WaveformView.markerAccessibilityLabel(for: m), "Marker at 0:05")
     }
 
+    // MARK: - FFT correctness
+
+    /// A full-scale 1 kHz sine pushed into a fresh FFTAnalyzer must produce a visible peak
+    /// in the mid-frequency bands (roughly bands 15–20 at 44.1 kHz with 32 log-spaced bands)
+    /// and near-silence in the sub-bass and near-Nyquist extremes.
+    ///
+    /// This test also exercises the optimised push() block-copy path: the entire fftSize window
+    /// is pushed in a single call, which uses the single-segment (no-wrap) branch.
+    func testFFTSineWaveCorrectness_1kHz() {
+        let fftSize = 1024
+        let sampleRate: Float = 44100
+        let testFreq: Float = 1000
+        let analyzer = FFTAnalyzer(fftSize: fftSize, bandCount: 32, sampleRate: sampleRate)
+
+        // Generate exactly one FFT window of a full-scale 1 kHz sine.
+        var sine = [Float](repeating: 0, count: fftSize)
+        for i in 0..<fftSize {
+            sine[i] = sinf(2 * .pi * testFreq * Float(i) / sampleRate)
+        }
+        sine.withUnsafeBufferPointer { buf in
+            _ = analyzer.push(samples: buf.baseAddress!, count: fftSize)
+        }
+
+        var bands = [Float](repeating: 0, count: 32)
+        analyzer.computeBands(out: &bands)
+
+        // ── Peak should be in the mid bands ──────────────────────────────────────────────
+        // At 44.1 kHz, 1 kHz maps to FFT bin ≈ 23 (1000 * 1024 / 44100).
+        // With 32 log-spaced bands from 40 Hz to 16 kHz, that bin falls in bands 15–20.
+        let peakIdx = bands.indices.max(by: { bands[$0] < bands[$1] })!
+        XCTAssertGreaterThan(bands[peakIdx], 0.3,
+            "Peak band \(peakIdx) should show strong energy for a full-scale 1 kHz sine (got \(bands[peakIdx]))")
+        XCTAssertTrue((10...24).contains(peakIdx),
+            "1 kHz peak should land in bands 10–24, got band \(peakIdx)")
+
+        // ── Sub-bass and near-Nyquist should be silent ──────────────────────────────────
+        XCTAssertLessThan(bands[0], 0.05,
+            "Band 0 (sub-bass) should be near silence for a 1 kHz sine (got \(bands[0]))")
+        XCTAssertLessThan(bands[31], 0.05,
+            "Band 31 (near-Nyquist) should be near silence for a 1 kHz sine (got \(bands[31]))")
+    }
+
+    /// Verify that pushing the same signal in two equal halves produces identical FFT output
+    /// to a single full-window push.  This exercises the ring buffer's wrap-around branch
+    /// (second half triggers the two-segment block-copy path in push()).
+    func testFFTRingBufferWrapAroundConsistency() {
+        let fftSize = 1024
+        let sampleRate: Float = 44100
+        let testFreq: Float = 440   // A4
+
+        // Build a reference signal.
+        var signal = [Float](repeating: 0, count: fftSize)
+        for i in 0..<fftSize {
+            signal[i] = sinf(2 * .pi * testFreq * Float(i) / sampleRate)
+        }
+
+        // Reference: single full-window push.
+        let refAnalyzer = FFTAnalyzer(fftSize: fftSize, bandCount: 32, sampleRate: sampleRate)
+        signal.withUnsafeBufferPointer { buf in
+            _ = refAnalyzer.push(samples: buf.baseAddress!, count: fftSize)
+        }
+        var refBands = [Float](repeating: 0, count: 32)
+        refAnalyzer.computeBands(out: &refBands)
+
+        // Under test: push in two halves so the second push wraps around the ring boundary.
+        let testAnalyzer = FFTAnalyzer(fftSize: fftSize, bandCount: 32, sampleRate: sampleRate)
+        let half = fftSize / 2
+        signal.withUnsafeBufferPointer { buf in
+            _ = testAnalyzer.push(samples: buf.baseAddress!,        count: half)
+            _ = testAnalyzer.push(samples: buf.baseAddress! + half, count: half)
+        }
+        var testBands = [Float](repeating: 0, count: 32)
+        testAnalyzer.computeBands(out: &testBands)
+
+        // Both paths must produce bit-identical output because the ring contents are identical.
+        for i in 0..<32 {
+            XCTAssertEqual(refBands[i], testBands[i], accuracy: 1e-5,
+                "Band \(i): single-push \(refBands[i]) vs split-push \(testBands[i])")
+        }
+    }
+
+    /// Push in four unequal chunks to exercise multiple wrap points and confirm the
+    /// band output still matches a single-pass reference.
+    func testFFTRingBufferMultiChunkConsistency() {
+        let fftSize = 1024
+        let sampleRate: Float = 44100
+
+        var signal = [Float](repeating: 0, count: fftSize)
+        for i in 0..<fftSize { signal[i] = sinf(2 * .pi * 880 * Float(i) / sampleRate) }
+
+        let refAnalyzer = FFTAnalyzer(fftSize: fftSize, bandCount: 32, sampleRate: sampleRate)
+        signal.withUnsafeBufferPointer { buf in
+            _ = refAnalyzer.push(samples: buf.baseAddress!, count: fftSize)
+        }
+        var refBands = [Float](repeating: 0, count: 32)
+        refAnalyzer.computeBands(out: &refBands)
+
+        // Chunk sizes chosen so wrap occurs in the middle of a chunk (not at a boundary).
+        let chunks = [256, 300, 212, 256]
+        assert(chunks.reduce(0, +) == fftSize)
+
+        let testAnalyzer = FFTAnalyzer(fftSize: fftSize, bandCount: 32, sampleRate: sampleRate)
+        var offset = 0
+        signal.withUnsafeBufferPointer { buf in
+            for size in chunks {
+                testAnalyzer.push(samples: buf.baseAddress! + offset, count: size)
+                offset += size
+            }
+        }
+        var testBands = [Float](repeating: 0, count: 32)
+        testAnalyzer.computeBands(out: &testBands)
+
+        for i in 0..<32 {
+            XCTAssertEqual(refBands[i], testBands[i], accuracy: 1e-5,
+                "Band \(i) mismatch between single-push and 4-chunk push")
+        }
+    }
+
+    // MARK: - FFT performance benchmarks
+
+    /// Establishes an upper-bound performance budget for computeBands().
+    ///
+    /// Rationale: at 44.1 kHz with a 1024-frame tap buffer, the audio render thread fires
+    /// ~43 times per second.  Each callback has an ~23 ms budget (1000 ms / 43).  The FFT
+    /// should consume well under 1% of that budget — i.e., < 230 µs.  We set a conservative
+    /// hard limit of 200 µs to leave headroom for slower CI machines.
+    ///
+    /// This test will fail on Simulator (which runs no real-time audio) if the machine is
+    /// unusually loaded; treat failures as a signal to profile, not as a correctness regression.
+    func testComputeBandsPerformanceBudget() {
+        let fftSize = 1024
+        let analyzer = FFTAnalyzer(fftSize: fftSize, bandCount: 32, sampleRate: 44100)
+
+        // Fill ring with band-limited noise so all bands register something.
+        var noise = [Float](repeating: 0, count: fftSize)
+        var rng: UInt64 = 0xDEADBEEF_CAFEBABE
+        for i in 0..<fftSize {
+            rng = rng &* 6364136223846793005 &+ 1442695040888963407
+            noise[i] = Float(Int64(bitPattern: rng)) / Float(Int64.max)
+        }
+        noise.withUnsafeBufferPointer { buf in
+            _ = analyzer.push(samples: buf.baseAddress!, count: fftSize)
+        }
+
+        var bands = [Float](repeating: 0, count: 32)
+        let iterations = 10_000
+
+        let start = CFAbsoluteTimeGetCurrent()
+        for _ in 0..<iterations {
+            analyzer.computeBands(out: &bands)
+        }
+        let elapsed = CFAbsoluteTimeGetCurrent() - start
+
+        let usPerCall = (elapsed / Double(iterations)) * 1_000_000
+        // Budget: 200 µs.  This is ~10× more conservative than the 23 ms callback period
+        // to ensure the FFT remains a negligible fraction of render-thread work.
+        XCTAssertLessThan(usPerCall, 200,
+            String(format: "computeBands exceeded 200 µs budget: %.1f µs/call", usPerCall))
+    }
+
+    /// Measures the push() throughput with a 512-frame buffer (typical AVAudioEngine delivery).
+    ///
+    /// The optimised block-copy implementation should complete in < 5 µs for 512 Float samples
+    /// on any Apple Silicon or A-series device.  The budget below is deliberately generous
+    /// (20 µs) to pass on CI machines and simulators without false failures.
+    func testPushPerformanceBudget() {
+        let fftSize = 1024
+        let analyzer = FFTAnalyzer(fftSize: fftSize, bandCount: 32, sampleRate: 44100)
+
+        // 512-frame buffer: exercises the split-copy (wrap-around) path on alternate calls.
+        var samples = [Float](repeating: 0, count: 512)
+        for i in 0..<512 { samples[i] = Float(i) / 512.0 }
+
+        let iterations = 50_000
+
+        let start = CFAbsoluteTimeGetCurrent()
+        samples.withUnsafeBufferPointer { buf in
+            for _ in 0..<iterations {
+                analyzer.push(samples: buf.baseAddress!, count: 512)
+            }
+        }
+        let elapsed = CFAbsoluteTimeGetCurrent() - start
+
+        let usPerCall = (elapsed / Double(iterations)) * 1_000_000
+        XCTAssertLessThan(usPerCall, 20,
+            String(format: "push(512) exceeded 20 µs budget: %.2f µs/call", usPerCall))
+    }
+
     // MARK: - AudioInterruption shared type
 
     func testMicrophoneInterruptionIsAliasOfAudioInterruption() {

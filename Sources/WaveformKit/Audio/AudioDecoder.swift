@@ -60,6 +60,11 @@ public enum AudioDecoder {
         var consumed = 0
 
         while let sampleBuffer = output.copyNextSampleBuffer() {
+            // Check for Swift Task cancellation on every decoded chunk.  For a 90-minute
+            // podcast this loop runs ~1 000 times; without this check, navigating away while
+            // decoding burns a CPU core for several seconds after the Task is cancelled.
+            try Task.checkCancellation()
+
             guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { continue }
             let length = CMBlockBufferGetDataLength(blockBuffer)
             guard length > 0 else { continue }
@@ -92,6 +97,11 @@ public enum AudioDecoder {
                 consumed = 0
             }
         }
+
+        // Final cancellation check before we build and return the summary.
+        // Prevents returning a partially-decoded summary if cancellation arrived
+        // between the last copyNextSampleBuffer() returning nil and this point.
+        try Task.checkCancellation()
 
         if buffer.count > consumed {
             let slice = buffer[consumed..<buffer.count]

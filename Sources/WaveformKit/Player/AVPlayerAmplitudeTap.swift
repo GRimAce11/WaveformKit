@@ -8,33 +8,64 @@ import os
 /// Thread-safe storage shared between the audio render thread (writer) and the main-thread poll
 /// (reader). Holds the latest single-RMS amplitude and the latest FFT band magnitudes.
 ///
-/// Fields touched only on the audio thread (`format`, `conversionScratch`) are not lock-protected
-/// because MTAudioProcessingTap serializes its prepare/process callbacks.
+/// ## Ownership model
+///
+/// | Field              | Written by       | Read by          | Synchronisation  |
+/// |--------------------|------------------|------------------|------------------|
+/// | `amplitude`        | audio thread     | main thread      | `os_unfair_lock` |
+/// | `bands`            | audio thread     | main thread      | `os_unfair_lock` |
+/// | `bandScratch`      | audio thread     | audio thread     | none (serial)    |
+/// | `sourceFormat`     | audio thread     | audio thread     | none (serial)    |
+/// | `conversionScratch`| audio thread     | audio thread     | none (serial)    |
+///
+/// `bandScratch` is the pre-allocated output buffer for `analyzer.computeBands(out:)`.
+/// It must NEVER be read from the main thread.  It exists solely to avoid a heap
+/// allocation (`[Float](repeating:0,count:bandCount)`) inside the realtime callback.
 final class AmplitudeTapStorage: @unchecked Sendable {
     private var lock = os_unfair_lock_s()
     private var amplitude: Float = 0
     private var bands: [Float]
-    let analyzer: FFTAnalyzer
 
-    // Audio-thread only — populated in prepare(), consumed in process().
+    // ── Audio-thread-only fields ──────────────────────────────────────────────────────────
+    // None of the fields below may be read or written on the main thread.
+
+    /// Pre-allocated scratch buffer for FFT band output.  Populated by
+    /// `analyzer.computeBands(out: &bandScratch)` and immediately drained by
+    /// `writeFromAudioThread(amplitude:)`.  Never accessed from the main thread.
+    var bandScratch: [Float]
+
+    /// Set in the MTAudioProcessingTap `prepare` callback; read in `process`.
     var sourceFormat: AudioStreamBasicDescription?
+
+    /// Float32 conversion buffer for Int16 PCM input.  Allocated once in `prepare`;
+    /// reused every callback — zero heap allocations in the process path.
     var conversionScratch: [Float] = []
 
+    let analyzer: FFTAnalyzer
+
     init(bandCount: Int, sampleRate: Float) {
-        self.bands = [Float](repeating: 0, count: bandCount)
-        self.analyzer = FFTAnalyzer(fftSize: 1024, bandCount: bandCount, sampleRate: sampleRate)
+        self.bands       = [Float](repeating: 0, count: bandCount)
+        self.bandScratch = [Float](repeating: 0, count: bandCount)
+        self.analyzer    = FFTAnalyzer(fftSize: 1024, bandCount: bandCount, sampleRate: sampleRate)
     }
 
-    /// Called from audio render thread. `incomingBands` length must equal `bands.count`.
-    func update(amplitude newAmplitude: Float, withBands incomingBands: [Float]) {
+    /// Atomically publish the latest amplitude and band values to the main thread.
+    ///
+    /// **Must be called only from the audio render thread**, immediately after
+    /// `analyzer.computeBands(out: &bandScratch)` has populated `bandScratch`.
+    ///
+    /// The lock window covers a scalar copy of `bandCount` floats (~20 ns for 32 bands).
+    /// `bandScratch` is never accessed by `snapshot()`, so there is no reader contention
+    /// on that field.
+    func writeFromAudioThread(amplitude newAmplitude: Float) {
         os_unfair_lock_lock(&lock)
         amplitude = newAmplitude
-        if bands.count == incomingBands.count {
-            for i in 0..<bands.count { bands[i] = incomingBands[i] }
-        }
+        let n = min(bands.count, bandScratch.count)
+        for i in 0..<n { bands[i] = bandScratch[i] }
         os_unfair_lock_unlock(&lock)
     }
 
+    /// Called from the main thread poll timer. Returns a snapshot of the latest values.
     func snapshot() -> (amplitude: Float, bands: [Float]) {
         os_unfair_lock_lock(&lock)
         defer { os_unfair_lock_unlock(&lock) }
@@ -227,41 +258,61 @@ private let amplitudeTapProcess: MTAudioProcessingTapProcessCallback = {
 
     for buf in abl {
         guard let data = buf.mData, buf.mDataByteSize > 0 else { continue }
-        let floatPtr: UnsafePointer<Float>
-        let frameCount: Int
 
         if isFloat {
-            frameCount = Int(buf.mDataByteSize) / MemoryLayout<Float>.size
+            // ── Float32 path ──────────────────────────────────────────────────────────────
+            // `data` is owned by the tap's ABL for the duration of this callback; the pointer
+            // is valid here without any closure wrapping.
+            let frameCount = Int(buf.mDataByteSize) / MemoryLayout<Float>.size
             guard frameCount > 0 else { continue }
-            floatPtr = UnsafePointer(data.assumingMemoryBound(to: Float.self))
+            let floatPtr = data.assumingMemoryBound(to: Float.self)
+
+            var rms: Float = 0
+            vDSP_rmsqv(floatPtr, 1, &rms, vDSP_Length(frameCount))
+            sumSquares += rms * rms * Float(frameCount)
+            totalCount += Float(frameCount)
+
+            if !firstChannelReady {
+                storage.analyzer.push(samples: floatPtr, count: frameCount)
+                firstChannelReady = true
+            }
         } else {
-            // Int16 → Float32 [-1, 1] into the preallocated scratch (no audio-thread alloc).
+            // ── Int16 path ────────────────────────────────────────────────────────────────
+            // Convert Int16 → Float32 in the pre-allocated conversionScratch.  All pointer
+            // usage (vDSP calls, FFT push) stays inside the single exclusive borrow of
+            // conversionScratch so no pointer escapes the closure.  This eliminates the
+            // original bug where `floatPtr` was extracted from withUnsafeBufferPointer and
+            // used after the closure's exclusive borrow had ended (undefined behaviour).
             let int16Count = Int(buf.mDataByteSize) / MemoryLayout<Int16>.size
             guard int16Count > 0, int16Count <= storage.conversionScratch.count else { continue }
-            frameCount = int16Count
             let intPtr = data.assumingMemoryBound(to: Int16.self)
+
+            var rms: Float = 0
+            let shouldPush = !firstChannelReady   // capture by value before the closure
+
             storage.conversionScratch.withUnsafeMutableBufferPointer { scratch in
                 guard let base = scratch.baseAddress else { return }
+                // Int16 → Float32 in [-1, 1]: convert then scale. No heap allocation.
                 vDSP_vflt16(intPtr, 1, base, 1, vDSP_Length(int16Count))
                 var scale: Float = 1.0 / 32768.0
                 vDSP_vsmul(base, 1, &scale, base, 1, vDSP_Length(int16Count))
+                // RMS and FFT push happen inside the closure — pointer stays valid.
+                vDSP_rmsqv(base, 1, &rms, vDSP_Length(int16Count))
+                if shouldPush {
+                    storage.analyzer.push(samples: base, count: int16Count)
+                }
             }
-            floatPtr = UnsafePointer(storage.conversionScratch.withUnsafeBufferPointer { $0.baseAddress! })
-        }
-
-        var rms: Float = 0
-        vDSP_rmsqv(floatPtr, 1, &rms, vDSP_Length(frameCount))
-        sumSquares += rms * rms * Float(frameCount)
-        totalCount += Float(frameCount)
-
-        if !firstChannelReady {
-            _ = storage.analyzer.push(samples: floatPtr, count: frameCount)
-            firstChannelReady = true
+            sumSquares += rms * rms * Float(int16Count)
+            totalCount += Float(int16Count)
+            if shouldPush { firstChannelReady = true }
         }
     }
 
+    // ── FFT + publish ─────────────────────────────────────────────────────────────────────
+    // computeBands writes into storage.bandScratch (pre-allocated in AmplitudeTapStorage.init).
+    // writeFromAudioThread then copies bandScratch → bands under os_unfair_lock.
+    // Zero heap allocations in this entire callback.
     let amplitude = totalCount > 0 ? sqrt(sumSquares / totalCount) : 0
-    var bandOut = [Float](repeating: 0, count: storage.analyzer.bandCount)
-    storage.analyzer.computeBands(out: &bandOut)
-    storage.update(amplitude: min(1, max(0, amplitude)), withBands: bandOut)
+    storage.analyzer.computeBands(out: &storage.bandScratch)
+    storage.writeFromAudioThread(amplitude: min(1, max(0, amplitude)))
 }

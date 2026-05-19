@@ -401,7 +401,9 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
         return out
     }
 
-    /// Runs on an internal AVAudioEngine queue. No main-actor state touched.
+    // Called from AVAudioEngine's internal render thread — must be allocation-free.
+    // bandScratch is pre-allocated in AmplitudeTapStorage.init and never touched from
+    // the main thread, so no lock is needed for it here.
     nonisolated private static func processBuffer(
         _ buffer: AVAudioPCMBuffer,
         storage: AmplitudeTapStorage,
@@ -414,10 +416,10 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
 
         var rms: Float = 0
         vDSP_rmsqv(ch0, 1, &rms, vDSP_Length(frameLength))
-        _ = storage.analyzer.push(samples: ch0, count: frameLength)
-        var bandOut = [Float](repeating: 0, count: storage.analyzer.bandCount)
-        storage.analyzer.computeBands(out: &bandOut)
-        storage.update(amplitude: min(1, max(0, rms)), withBands: bandOut)
+        storage.analyzer.push(samples: ch0, count: frameLength)
+        // Write into pre-allocated scratch — zero heap allocation on the render thread.
+        storage.analyzer.computeBands(out: &storage.bandScratch)
+        storage.writeFromAudioThread(amplitude: min(1, max(0, rms)))
 
         if let file {
             try? file.write(from: buffer)
