@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-05-19
+
+### Added
+
+**Async loading lifecycle**
+- `WaveformState` enum — `.idle`, `.loading(progress: Double)`, `.loaded(WaveformSummary)`,
+  `.failed(Error)` — with typed accessors (`summary`, `isLoading`, `loadingProgress`, `error`).
+- `WaveformLoader` replaces the old `enum WaveformLoader`. Now an `@Observable @MainActor`
+  class with `load(url:targetBars:useCache:)`, `cancel()`, `retry()`, and `set(_:)`.
+  The static `WaveformLoader.load(url:targetBars:useCache:)` method is preserved on the class
+  for source compatibility with existing callers.
+- `AudioDecoder.summarize` gains `onProgress: (@Sendable (Double) -> Void)?`, fired per decoded
+  bar (0…0.99) and once at 1.0 on completion.
+- `WaveformView.init(loader:)` — convenience init that shows an `.idle` shimmer while decoding
+  and transitions to the real waveform on `.loaded`.
+- `View.waveformStateOverlay(_:)` — modifier that adds a progress bar for `.loading` and a
+  system error view for `.failed`.
+
+**Renderer extensibility**
+- `WaveformRenderer` — `Sendable` drawing protocol for custom styles.
+- `WaveformStyle.custom(renderer: any WaveformRenderer, barCount: Int)` — seventh style case.
+- `WaveformStyle.Equatable` is now manual. Built-in cases compare structurally (no behaviour
+  change); `.custom` cases are never equal.
+
+**Viewport infrastructure**
+- `WaveformViewport` — `visibleRange`, `zoomFactor`, `isZoomed`, `normalizedRange`,
+  `zoom(to:anchor:minSpan:)`, `pan(by:)`, `resetZoom()`, `visibleIndices(totalBars:)`,
+  `time(forVisibleProgress:)`, `visibleProgress(for:)`.
+- `WaveformView` gains `viewport: Binding<WaveformViewport>? = nil`. Defaults to `nil` —
+  fully backward-compatible. Gesture wiring (pinch-to-zoom, pan) ships in Phase 3.
+
+**Resample caching**
+- `ResampleCache` caches resampled amplitude arrays by `(summaryID, barCount, visibleSlice)`,
+  held in `@State` in `WaveformView`. Eliminates per-frame `[Float]` allocations under
+  reactive and dancing-bars movement modes (30–60 Hz body evaluations).
+- `resampleAmplitudes` uses `vDSP_sve` (vectorised sum) instead of `reduce(0,+)`.
+- `WaveformSummary` gains `id: UUID` for cache keying, excluded from `Equatable` and `Codable`.
+
+**Realtime audio pipeline hardening** *(internal — no public API changes)*
+- Pre-allocated `bandScratch` in `AmplitudeTapStorage` eliminates heap allocation inside
+  `amplitudeTapProcess`, `AVAudioEnginePlayer.processBuffer`, and `MicrophoneRecorder.processBuffer`.
+- `FFTAnalyzer.push` — scalar loop + modulo replaced with two block copies + bitmask wrap.
+- `FFTAnalyzer.computeBands` — scalar ring-linearisation replaced with two block copies +
+  single `vDSP_vmul` fused inside nested `withUnsafeBufferPointer`.
+- Int16 audio path — all vDSP calls now happen inside the single exclusive borrow of
+  `conversionScratch`, eliminating an `UnsafePointer` escape.
+- `AudioDecoder.summarize` — `Task.checkCancellation()` added inside the decode loop.
+
+**Tests: 84 total (+29 from 0.4.1)**
+
+### Migration notes
+
+**`WaveformLoader` type change** — `WaveformLoader` was a static-only `enum`; it is now a
+`final class`. `WaveformLoader.load(url:)` call sites compile unchanged. No enum cases or
+stored properties existed, so no real code breaks.
+
+**`WaveformSummary.id`** — additive. Existing code compiles unchanged. Cached JSON is
+backward-compatible (`id` is not encoded; decoded summaries get a fresh `UUID`).
+
+**`WaveformStyle.Equatable`** — behaviour for all six built-in cases is identical to the
+previous synthesised implementation. `.custom` cases compare unequal (only sensible default).
+
 ## [0.4.1] - 2026-05-19
 
 ### Added
