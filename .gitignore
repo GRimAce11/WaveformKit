@@ -6,3 +6,8 @@ Packages/
 xcuserdata/
 DerivedData/
 .netrc
+
+# Demo app — Xcode user state
+Demo/*.xcodeproj/xcuserdata/
+Demo/*.xcodeproj/project.xcworkspace/xcuserdata/
+Demo/*.xcodeproj/project.xcworkspace/xcuserdata/
