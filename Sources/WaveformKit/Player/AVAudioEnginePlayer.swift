@@ -46,6 +46,7 @@ public final class AVAudioEnginePlayer: WaveformPlayerAdapter, AmplitudeTap {
     public private(set) var lastError: AVAudioEnginePlayerError?
 
     public let bandCount: Int
+    public let autoResumeAfterInterruption: Bool
 
     @ObservationIgnored private let engine = AVAudioEngine()
     @ObservationIgnored private let playerNode = AVAudioPlayerNode()
@@ -57,14 +58,26 @@ public final class AVAudioEnginePlayer: WaveformPlayerAdapter, AmplitudeTap {
     @ObservationIgnored private var bandEnvelopes: [AmplitudeEnvelope]
     @ObservationIgnored private var seekOffset: TimeInterval = 0
     @ObservationIgnored private var tapInstalled = false
+    @ObservationIgnored private let onInterruption: (@MainActor (AudioInterruption) -> Void)?
+    @ObservationIgnored private var interruptionObserver: NSObjectProtocol?
+    @ObservationIgnored private var routeObserver: NSObjectProtocol?
+    @ObservationIgnored private var wasPlayingBeforeInterruption: Bool = false
 
-    public init(url: URL, bandCount: Int = 32, pollRate: Double = 30) throws {
+    public init(
+        url: URL,
+        bandCount: Int = 32,
+        pollRate: Double = 30,
+        autoResumeAfterInterruption: Bool = true,
+        onInterruption: (@MainActor (AudioInterruption) -> Void)? = nil
+    ) throws {
         do {
             self.file = try AVAudioFile(forReading: url)
         } catch {
             throw AVAudioEnginePlayerError.fileLoadFailed(underlying: error as NSError)
         }
         self.bandCount = bandCount
+        self.autoResumeAfterInterruption = autoResumeAfterInterruption
+        self.onInterruption = onInterruption
         self.pollInterval = 1.0 / max(1, pollRate)
         self.bands = [Float](repeating: 0, count: bandCount)
         self.bandEnvelopes = Array(repeating: AmplitudeEnvelope(), count: bandCount)
@@ -95,6 +108,7 @@ public final class AVAudioEnginePlayer: WaveformPlayerAdapter, AmplitudeTap {
         playerNode.play()
         isPlaying = true
         startTimer()
+        installSystemObservers()
     }
 
     public func pause() {
@@ -112,6 +126,8 @@ public final class AVAudioEnginePlayer: WaveformPlayerAdapter, AmplitudeTap {
         isPlaying = false
         timer?.invalidate()
         timer = nil
+        removeSystemObservers()
+        wasPlayingBeforeInterruption = false
         seekOffset = 0
         currentTime = 0
         schedule(from: 0)
@@ -193,6 +209,91 @@ public final class AVAudioEnginePlayer: WaveformPlayerAdapter, AmplitudeTap {
         }
     }
 
+    // MARK: - System event observers
+
+    private func installSystemObservers() {
+        #if os(iOS) || os(tvOS) || os(visionOS)
+        guard interruptionObserver == nil else { return }
+        let center = NotificationCenter.default
+        interruptionObserver = center.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            let userInfo = note.userInfo
+            Task { @MainActor [weak self] in
+                self?.handleInterruption(userInfo: userInfo)
+            }
+        }
+        routeObserver = center.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            let userInfo = note.userInfo
+            Task { @MainActor [weak self] in
+                self?.handleRouteChange(userInfo: userInfo)
+            }
+        }
+        #endif
+    }
+
+    private func removeSystemObservers() {
+        let center = NotificationCenter.default
+        if let o = interruptionObserver { center.removeObserver(o) }
+        if let o = routeObserver { center.removeObserver(o) }
+        interruptionObserver = nil
+        routeObserver = nil
+    }
+
+    #if os(iOS) || os(tvOS) || os(visionOS)
+    private func handleInterruption(userInfo: [AnyHashable: Any]?) {
+        guard let userInfo,
+              let raw = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+        switch type {
+        case .began:
+            if isPlaying {
+                wasPlayingBeforeInterruption = true
+                playerNode.pause()
+                isPlaying = false
+                timer?.invalidate()
+                timer = nil
+            }
+            onInterruption?(.began)
+        case .ended:
+            let optsRaw = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+            let opts = AVAudioSession.InterruptionOptions(rawValue: optsRaw)
+            let shouldResume = opts.contains(.shouldResume)
+            onInterruption?(.ended(shouldResume: shouldResume))
+            if shouldResume, autoResumeAfterInterruption, wasPlayingBeforeInterruption {
+                wasPlayingBeforeInterruption = false
+                play()
+            } else if !shouldResume {
+                wasPlayingBeforeInterruption = false
+            }
+        @unknown default:
+            break
+        }
+    }
+
+    private func handleRouteChange(userInfo: [AnyHashable: Any]?) {
+        guard let userInfo,
+              let raw = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
+        let mapped: AudioInterruption.RouteChangeReason
+        switch reason {
+        case .oldDeviceUnavailable: mapped = .oldDeviceUnavailable
+        case .newDeviceAvailable:   mapped = .newDeviceAvailable
+        default:                    mapped = .other
+        }
+        onInterruption?(.audioRouteChanged(reason: mapped))
+    }
+    #else
+    private func handleInterruption(userInfo: [AnyHashable: Any]?) {}
+    private func handleRouteChange(userInfo: [AnyHashable: Any]?) {}
+    #endif
+
     nonisolated private static func processBuffer(_ buffer: AVAudioPCMBuffer, storage: AmplitudeTapStorage) {
         guard let channelData = buffer.floatChannelData else { return }
         let frameLength = Int(buffer.frameLength)
@@ -208,6 +309,9 @@ public final class AVAudioEnginePlayer: WaveformPlayerAdapter, AmplitudeTap {
 
     deinit {
         timer?.invalidate()
+        let center = NotificationCenter.default
+        if let o = interruptionObserver { center.removeObserver(o) }
+        if let o = routeObserver { center.removeObserver(o) }
         if engine.isRunning {
             playerNode.stop()
             engine.stop()
