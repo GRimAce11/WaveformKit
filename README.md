@@ -64,6 +64,23 @@ dependencies: [
 
 ---
 
+## Demo App
+
+A runnable showcase app lives in [`Demo/`](Demo/). Open `Demo/Test Waveform.xcodeproj` — it references WaveformKit via local path so it builds immediately without an SPM fetch.
+
+| Screen | What it shows |
+|---|---|
+| **Style Gallery** | All 6 styles with live movement, colour, and progress controls |
+| **Playback** | `WaveformLoader` + `AVPlayer` + markers + seek scrubbing |
+| **Async Loading** | `WaveformState` lifecycle — progress bar, cancel, retry, error |
+| **Microphone** | Live FFT recording + interruption handling + captured-file playback |
+| **Custom Renderer** | Three `WaveformRenderer` implementations with annotated source |
+| **Viewport** | Programmatic `WaveformViewport` zoom and pan |
+
+The demo generates a test tone on-device at first launch — no bundled audio files, no network required.
+
+---
+
 ## Quick Start
 
 The recommended entry point is `WaveformLoader` + `WaveformView(loader:)`. It handles the loading lifecycle, shows a skeleton shimmer while decoding, and transitions cleanly to the real waveform.
