@@ -11,25 +11,6 @@ public enum MicrophoneRecorderError: Error, Sendable {
     case fileCreationFailed(underlying: NSError)
 }
 
-/// System-level events that can affect mic capture mid-recording. Delivered to the recorder's
-/// `onInterruption` callback so the app can react (toast, button-state sync, etc.).
-public enum MicrophoneInterruption: Sendable, Equatable {
-    /// Another audio source (phone call, Siri, alarm) interrupted capture. Engine is now paused.
-    case began
-    /// The interruption ended. `shouldResume` mirrors iOS's hint: when `true`, the OS recommends
-    /// resuming. The recorder auto-resumes only if `autoResumeAfterInterruption` was enabled.
-    case ended(shouldResume: Bool)
-    /// The audio route changed (headphones unplugged, AirPods connected, etc.). Capture continues
-    /// on the new route; apps may choose to pause manually for e.g. `oldDeviceUnavailable`.
-    case audioRouteChanged(reason: RouteChangeReason)
-
-    public enum RouteChangeReason: Sendable, Equatable {
-        case oldDeviceUnavailable
-        case newDeviceAvailable
-        case other
-    }
-}
-
 /// Live microphone capture that drives the same `WaveformView` API as the file-playback adapters.
 ///
 /// Usage:
