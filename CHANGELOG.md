@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-05-19
+
+### Added
+- **Per-marker VoiceOver focus** — each `WaveformMarker` is exposed as its own accessibility
+  element via `accessibilityChildren`. VoiceOver users can swipe between markers and double-tap
+  to fire `onMarkerTap`. Label phrasing: `"Intro, at 0:12"` (point) or `"Verse, 0:48 to 1:10"`
+  (region). `WaveformView.markerAccessibilityLabel(for:)` exposed for custom wrappers.
+- **`AudioInterruption`** shared enum (previously `MicrophoneInterruption`) covering both player
+  and recorder interruption events. `MicrophoneInterruption` remains as a typealias for source
+  compatibility.
+- **AVAudioEnginePlayer interruption handling** — installs/removes observers across
+  `play()` / `stop()`, auto-pauses on `.began`, auto-resumes on `.ended(shouldResume: true)` when
+  `autoResumeAfterInterruption` is `true` (default), and reports route changes via the same
+  `onInterruption` callback the recorder already had.
+
 ## [0.4.0] - 2026-05-17
 
 ### Added

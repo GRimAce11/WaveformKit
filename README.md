@@ -327,6 +327,12 @@ WaveformView(
 Seek works by stopping the player node, scheduling a segment from the new frame, and resuming —
 the same pattern any `AVAudioEngine`-based player uses.
 
+`AVAudioEnginePlayer` accepts an optional `onInterruption: (AudioInterruption) -> Void` callback
+and an `autoResumeAfterInterruption: Bool = true` flag. Phone calls / Siri / alarms auto-pause
+the player, fire `.began`, and (if iOS hints `shouldResume`) the player auto-resumes on `.ended`.
+Route changes (headphones unplugged, AirPods connected) report through the same callback so apps
+can decide whether to pause.
+
 ## Snapshot to image
 
 ```swift
@@ -348,7 +354,12 @@ share-sheet images.
 
 `WaveformView` is a single adjustable element for VoiceOver. The value is announced as
 `"0:42 of 3:14"`; swipe up/down moves by 5 % of duration and routes through `onSeek`. Marker count
-is appended to the label when markers are present. Nothing to wire — it's on by default.
+is appended to the label when markers are present.
+
+Each `WaveformMarker` is also exposed as its own accessibility child — VoiceOver users swipe
+between markers and double-tap to fire `onMarkerTap`. Phrasing is `"Intro, at 0:12"` for points
+and `"Verse, 0:48 to 1:10"` for regions. Custom wrappers can reuse the same string via
+`WaveformView.markerAccessibilityLabel(for:)`. All accessibility behavior is on by default.
 
 ## Loading skeleton & previews
 

@@ -394,10 +394,52 @@ final class WaveformKitTests: XCTestCase {
     // MARK: - WaveformSummary integration
 
     func testDemoSummaryWorksAsWaveformViewInput() {
-        // Smoke test: a view built from .demo() should produce a non-nil snapshot.
-        // We can't render an image off main actor in a unit test, so just verify .demo() is
-        // accepted as a WaveformSummary by inspection.
         let summary: WaveformSummary = .demo()
         XCTAssertGreaterThan(summary.amplitudes.count, 0)
+    }
+
+    // MARK: - Per-marker accessibility labels
+
+    func testMarkerAccessibilityLabelWithCustomLabel() {
+        let m = WaveformMarker(time: 12, color: .red, label: "Intro")
+        XCTAssertEqual(WaveformView.markerAccessibilityLabel(for: m), "Intro, at 0:12")
+    }
+
+    func testMarkerAccessibilityLabelWithoutCustomLabel() {
+        let m = WaveformMarker(time: 67, color: .red)
+        XCTAssertEqual(WaveformView.markerAccessibilityLabel(for: m), "Marker at 1:07")
+    }
+
+    func testMarkerAccessibilityLabelRegionWithCustomLabel() {
+        let m = WaveformMarker(time: 48, duration: 22, color: .orange, label: "Verse")
+        XCTAssertEqual(WaveformView.markerAccessibilityLabel(for: m), "Verse, 0:48 to 1:10")
+    }
+
+    func testMarkerAccessibilityLabelRegionWithoutCustomLabel() {
+        let m = WaveformMarker(time: 0, duration: 30, color: .blue)
+        XCTAssertEqual(WaveformView.markerAccessibilityLabel(for: m), "Region, 0:00 to 0:30")
+    }
+
+    func testMarkerAccessibilityLabelWhitespaceLabelFallsBackToDefault() {
+        let m = WaveformMarker(time: 5, color: .red, label: "   ")
+        XCTAssertEqual(WaveformView.markerAccessibilityLabel(for: m), "Marker at 0:05")
+    }
+
+    // MARK: - AudioInterruption shared type
+
+    func testMicrophoneInterruptionIsAliasOfAudioInterruption() {
+        let a: AudioInterruption = .began
+        let b: MicrophoneInterruption = .began
+        XCTAssertEqual(a, b)
+
+        let c: AudioInterruption = .audioRouteChanged(reason: .oldDeviceUnavailable)
+        let d: MicrophoneInterruption = .audioRouteChanged(reason: .oldDeviceUnavailable)
+        XCTAssertEqual(c, d)
+    }
+
+    func testAudioInterruptionEquality() {
+        XCTAssertEqual(AudioInterruption.began, .began)
+        XCTAssertEqual(AudioInterruption.ended(shouldResume: true), .ended(shouldResume: true))
+        XCTAssertNotEqual(AudioInterruption.ended(shouldResume: true), .ended(shouldResume: false))
     }
 }
