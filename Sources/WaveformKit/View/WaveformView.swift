@@ -127,8 +127,10 @@ public struct WaveformView: View {
             let side = min(size.width, size.height)
             let outerR = side / 2
             let center = CGPoint(x: size.width / 2, y: size.height / 2)
-            let progress = marker.time + marker.duration / 2
-            let angle = -.pi / 2 + (progress / summary.duration) * 2 * .pi
+            // Stay in CGFloat throughout so `cos` / `sin` resolve unambiguously on toolchains
+            // (Swift 6.0 / Xcode 16) where the Double and CGFloat overloads are both visible.
+            let progressFrac = CGFloat((marker.time + marker.duration / 2) / summary.duration)
+            let angle: CGFloat = -.pi / 2 + progressFrac * 2 * .pi
             return CGPoint(x: center.x + cos(angle) * outerR, y: center.y + sin(angle) * outerR)
         }
         let centerTime = marker.time + marker.duration / 2
