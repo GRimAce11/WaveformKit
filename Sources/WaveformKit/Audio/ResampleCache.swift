@@ -15,10 +15,16 @@ import Accelerate
 /// Not thread-safe; no lock required.
 ///
 /// ## Eviction
-/// All entries are dropped the first time a summary with a different `id` is seen.
-/// The cache therefore holds at most `O(styleCount)` entries at any time — typically 1–2
-/// entries for a single-style view, or a handful for a tabbed player.
+/// Two-level.  All entries are dropped the moment a summary with a different `id` is seen, and
+/// within a single summary the cache is a fixed-capacity LRU.  The LRU bound matters as soon as
+/// zoom gestures are live: a pinch mints a new `(startIdx, endIdx)` slice on every frame, so a
+/// cache keyed on the slice and evicted only on summary change would grow without limit for as
+/// long as the user keeps zooming.
 final class ResampleCache {
+
+    /// Entries retained per summary.  Sixteen covers a multi-style view plus a gesture's worth of
+    /// in-flight zoom levels; at 200 bars that is roughly 13 KB.
+    static let defaultCapacity = 16
 
     struct Key: Hashable {
         var summaryID: UUID
@@ -27,11 +33,28 @@ final class ResampleCache {
         var endIdx: Int
     }
 
-    private var store: [Key: [Float]] = [:]
+    private struct Entry {
+        var value: [Float]
+        /// Logical timestamp of the last `get`/`set`.  Compared only against other entries, so
+        /// wrap-around after 2^64 accesses is not a concern.
+        var lastUsed: UInt64
+    }
+
+    private var store: [Key: Entry] = [:]
     private var activeSummaryID: UUID?
+    private var clock: UInt64 = 0
+    private let capacity: Int
+
+    init(capacity: Int = ResampleCache.defaultCapacity) {
+        self.capacity = max(1, capacity)
+    }
 
     func get(summaryID: UUID, count: Int, startIdx: Int, endIdx: Int) -> [Float]? {
-        store[Key(summaryID: summaryID, count: count, startIdx: startIdx, endIdx: endIdx)]
+        let key = Key(summaryID: summaryID, count: count, startIdx: startIdx, endIdx: endIdx)
+        guard let entry = store[key] else { return nil }
+        clock &+= 1
+        store[key]?.lastUsed = clock
+        return entry.value
     }
 
     func set(_ result: [Float], summaryID: UUID, count: Int, startIdx: Int, endIdx: Int) {
@@ -40,7 +63,22 @@ final class ResampleCache {
             store.removeAll(keepingCapacity: true)
             activeSummaryID = summaryID
         }
-        store[Key(summaryID: summaryID, count: count, startIdx: startIdx, endIdx: endIdx)] = result
+        clock &+= 1
+        store[Key(summaryID: summaryID, count: count, startIdx: startIdx, endIdx: endIdx)] =
+            Entry(value: result, lastUsed: clock)
+        evictIfNeeded()
+    }
+
+    /// Number of live entries.  Exposed for tests.
+    var count: Int { store.count }
+
+    private func evictIfNeeded() {
+        // `capacity` is small, so a linear scan for the oldest entry is cheaper than maintaining
+        // the intrusive linked list a general-purpose LRU would use.
+        while store.count > capacity {
+            guard let oldest = store.min(by: { $0.value.lastUsed < $1.value.lastUsed })?.key else { return }
+            store.removeValue(forKey: oldest)
+        }
     }
 }
 

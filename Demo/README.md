@@ -11,7 +11,7 @@ An Xcode project that demonstrates every major WaveformKit capability in a singl
 | **Async Loading** | `WaveformState` lifecycle — progress bar, cancel, retry, error |
 | **Microphone** | Live FFT, recording, interruption handling, playback of captured file |
 | **Custom Renderer** | Three `WaveformRenderer` implementations: oscilloscope, mirror fill, level meter |
-| **Viewport** | `WaveformViewport` programmatic zoom and pan |
+| **Viewport** | Pinch / pan / double-tap gestures plus the programmatic `WaveformViewport` API |
 
 ## Requirements
 
@@ -49,7 +49,7 @@ Test Waveform/
 ├── AsyncLoadingScreen.swift        WaveformState lifecycle
 ├── MicrophoneRecorderScreen.swift  Live recording + playback
 ├── CustomRendererScreen.swift      WaveformRenderer protocol examples
-└── ViewportScreen.swift            WaveformViewport zoom/pan demo
+└── ViewportScreen.swift            WaveformViewport gestures + programmatic zoom/pan
 ```
 
 ## License

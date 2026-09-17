@@ -94,6 +94,21 @@ public final class WaveformLoader {
         }
     }
 
+    /// Begin loading from an `AudioSource`.
+    ///
+    /// `.file` decodes exactly as `load(url:targetBars:useCache:)` does.  `.precomputed`
+    /// resolves to `.loaded` immediately — no decode, no cache write, no progress ticks — so
+    /// callers holding a server-supplied summary can use the same code path as callers holding
+    /// a file.
+    public func load(source: AudioSource, targetBars: Int = 200, useCache: Bool = true) {
+        switch source {
+        case .file(let url):
+            load(url: url, targetBars: targetBars, useCache: useCache)
+        case .precomputed(let summary):
+            set(summary)
+        }
+    }
+
     /// Cancel the current decode, if any.  State returns to `.idle`.
     public func cancel() {
         loadTask?.cancel()
@@ -108,7 +123,8 @@ public final class WaveformLoader {
     }
 
     /// Directly inject a pre-computed summary — skips decoding entirely.
-    /// Useful for `AudioSource.precomputed` paths and unit tests.
+    /// This is what `load(source:)` calls for `AudioSource.precomputed`; call it directly when
+    /// you already hold a summary and have no `AudioSource` to wrap it in.
     public func set(_ summary: WaveformSummary) {
         cancel()
         state = .loaded(summary)
@@ -136,5 +152,20 @@ public final class WaveformLoader {
         let summary = try await AudioDecoder.summarize(url: url, targetBars: targetBars)
         if useCache { WaveformCache.save(summary, url: url, targetBars: targetBars) }
         return summary
+    }
+
+    /// One-shot async loader for an `AudioSource`.  A `.precomputed` source returns its summary
+    /// without touching the disk or the decoder.
+    public static func load(
+        source: AudioSource,
+        targetBars: Int = 200,
+        useCache: Bool = true
+    ) async throws -> WaveformSummary {
+        switch source {
+        case .file(let url):
+            return try await load(url: url, targetBars: targetBars, useCache: useCache)
+        case .precomputed(let summary):
+            return summary
+        }
     }
 }

@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+**Zoom and pan gestures** — completes the Phase 3 Tier 1 deliverable. `WaveformViewport` shipped
+in 0.5.0 with complete arithmetic but no gestures; it is now driven by touch.
+
+- `WaveformZoomOptions` — configures the pinch/pan/double-tap gestures on a `WaveformView`.
+  `dragBehavior` (`.seek` / `.panWhenZoomed`), `maxZoomFactor`, `minVisibleDuration`,
+  `resetsOnDoubleTap`, `yieldsToVerticalScroll`, `scrollIntentThreshold`, plus the
+  `.disabled` / `.editor` / `.inScrollView` presets.
+- `WaveformView` gains `zoom: WaveformZoomOptions = WaveformZoomOptions()` on both the
+  `summary:` and `loader:` initialisers. Gestures are inert without a `viewport` binding, so
+  existing call sites are unaffected.
+- Pinch zooms anchored at the gesture centroid via `MagnifyGesture` (compiled out on tvOS).
+  Drag pans under `.panWhenZoomed`. Double-tap resets to the full duration.
+- `WaveformZoomOptions.zoomTarget(base:magnification:)` and
+  `WaveformZoomOptions.panSeconds(deltaPoints:visibleSpan:width:)` are public pure functions, so
+  the gesture arithmetic is testable without a running view hierarchy.
+
+**Disk cache eviction**
+
+- `WaveformCache.Configuration` with a `maximumBytes` budget; `.default` (32 MB) and
+  `.unbounded` (pre-0.6.0 behaviour).
+- `WaveformCache.configuration` — assigning a smaller budget evicts immediately.
+- `WaveformCache.evictIfNeeded()` and `WaveformCache.currentByteSize` for on-demand reclamation
+  and settings UI.
+- Cache reads now stamp the entry's modification date, so eviction is driven by last *access*
+  rather than last write.
+
+**`AudioSource` is now a real code path**
+
+- `WaveformLoader.load(source:targetBars:useCache:)` — instance and static. `.file` decodes as
+  before; `.precomputed` resolves to `.loaded` synchronously.
+- `AudioSource.url` and `AudioSource.summary` accessors.
+
+### Changed
+
+- `ResampleCache` is now a fixed-capacity LRU (16 entries by default) on top of its existing
+  evict-on-new-summary policy. Its key includes the visible slice, so a live pinch minted a new
+  permanent entry every frame — unbounded growth that only became reachable once zoom gestures
+  existed.
+- Tap-to-seek now resolves on touch-up rather than touch-down, so the second tap of a double-tap
+  can reset the zoom instead of seeking. Scrubbing is unchanged: once a drag passes the 4 pt
+  threshold, seeks fire continuously as before.
+
+### Fixed
+
+- `WaveformCache` no longer grows without bound. Previously it was documented as a known
+  limitation and only `clear()` reclaimed space.
+
+**Tests: 114 total (+30 from 0.5.0)**
+
+
 ## [0.5.0] - 2026-05-19
 
 ### Added

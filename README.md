@@ -5,7 +5,7 @@ A SwiftUI waveform visualization framework for audio apps. Handles decoding, cac
 ![Swift](https://img.shields.io/badge/Swift-5.9+-orange?logo=swift)
 ![Platforms](https://img.shields.io/badge/Platforms-iOS%2017%20%7C%20macOS%2014-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
-![Tests](https://img.shields.io/badge/Tests-84%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/Tests-114%20passing-brightgreen)
 
 ---
 
@@ -18,7 +18,7 @@ Key design decisions that differentiate it:
 - **Zero-allocation audio callbacks** — FFT processing uses pre-allocated scratch buffers and vectorised vDSP operations. No heap allocations on the audio render thread.
 - **Async loading lifecycle** — `WaveformLoader` drives `WaveformState` (`.idle → .loading(progress) → .loaded / .failed`) so loading, progress, and error states are first-class, not afterthoughts.
 - **Extensible renderer protocol** — `WaveformRenderer` lets you supply a custom drawing implementation without forking. Built-in styles are backed by the same protocol surface.
-- **Viewport foundation** — `WaveformViewport` models the visible time range for zoom/pan; the coordinate math is complete and tested, ready for gesture wiring in the next release.
+- **Zoom and pan, wired** — pinch to zoom anchored under the pinch centroid, drag to pan, double-tap to reset. `WaveformViewport` is a plain `Sendable` value you can also drive programmatically, and the gesture arithmetic is pure and unit-tested.
 - **Complete, not minimal** — decoding, disk caching, FFT spectrum, live mic, seek gestures, markers, accessibility, and snapshot export are all included.
 
 ---
@@ -29,14 +29,14 @@ Key design decisions that differentiate it:
 - Four movement modes: progress-fill, reactive (FFT-driven), combined, idle shimmer
 - `WaveformLoader` with `WaveformState` async lifecycle — progress, error, and retry built in
 - `WaveformRenderer` protocol for fully custom styles without forking
-- `WaveformViewport` data model for zoom/pan (gesture wiring in Phase 3)
+- Pinch-to-zoom, drag-to-pan, and double-tap-to-reset via `WaveformViewport` — `ScrollView`-safe
 - Seek gestures on all styles — linear drag on bar/line/dot styles, angular drag on circular
 - Markers and region overlays with tap callbacks, VoiceOver children, and circular-style support
 - Live microphone capture (`MicrophoneRecorder`) with bounded memory and interruption handling
 - Three player paths: `AVPlayer` (streaming/local), `AVAudioPlayer` (local), `AVAudioEnginePlayer` (local + FFT)
 - Real FFT spectrum via `MTAudioProcessingTap` on the audio render thread (Hann-windowed, 1024-point, log-spaced bands)
 - Resample cache — amplitude arrays are computed once per summary; 30–60 Hz re-renders hit a dictionary lookup
-- Disk waveform cache keyed by file identity
+- Disk waveform cache keyed by file identity, with an LRU byte budget
 - VoiceOver: adjustable element with `X:XX of Y:YY` value; per-marker accessibility children
 - `WaveformView.snapshot(...)` → `CGImage` for thumbnails and share sheets
 - Zero external dependencies — AVFoundation, MediaToolbox, Accelerate only
@@ -75,7 +75,7 @@ A runnable showcase app lives in [`Demo/`](Demo/). Open `Demo/Test Waveform.xcod
 | **Async Loading** | `WaveformState` lifecycle — progress bar, cancel, retry, error |
 | **Microphone** | Live FFT recording + interruption handling + captured-file playback |
 | **Custom Renderer** | Three `WaveformRenderer` implementations with annotated source |
-| **Viewport** | Programmatic `WaveformViewport` zoom and pan |
+| **Viewport** | Pinch / pan / double-tap gestures, both `dragBehavior` modes, inside a `ScrollView` |
 
 The demo generates a test tone on-device at first launch — no bundled audio files, no network required.
 
@@ -169,10 +169,22 @@ loader.cancel()
 loader.retry()
 ```
 
+### Loading from an `AudioSource`
+
+When a feed mixes files that still need decoding with summaries you already hold — fetched from
+a server, restored from a previous session — both go through the same call. A `.precomputed`
+source resolves to `.loaded` synchronously: no decode, no cache write, no progress ticks.
+
+```swift
+let source: AudioSource = item.cachedSummary.map(AudioSource.precomputed)
+                       ?? .file(item.localURL)
+loader.load(source: source)
+```
+
 ### Inject a pre-computed summary
 
 ```swift
-// Useful for AudioSource.precomputed paths or unit tests
+// The same thing load(source:) does for .precomputed, when you have no AudioSource to wrap
 loader.set(WaveformSummary.demo(duration: 30))
 ```
 
@@ -263,38 +275,106 @@ WaveformView(
 
 ---
 
-## Viewport Infrastructure
+## Zoom & Pan
 
-`WaveformViewport` models the currently-visible time window. The data model and coordinate arithmetic are complete; pinch-to-zoom and pan gestures are the Phase 3 deliverable.
-
-You can drive the viewport programmatically today — useful for views that set the visible range externally:
+Pass a `WaveformViewport` binding and the view becomes zoomable: pinch to zoom, drag to pan,
+double-tap to reset. Without a binding nothing changes — the gestures have no state to drive.
 
 ```swift
 @State private var viewport = WaveformViewport(duration: summary.duration)
 
 WaveformView(
-    summary:    summary,
+    summary:     summary,
     currentTime: player.currentTime,
-    viewport:   $viewport,
-    onSeek:     { player.seek(to: $0) }
+    viewport:    $viewport,
+    onSeek:      { player.seek(to: $0) }
 )
+```
 
+A pinch is anchored at the gesture centroid, so the audio under your fingers stays put. Zoom is
+clamped to `maxZoomFactor` and `minVisibleDuration`, whichever binds first.
+
+### Choosing what a drag means
+
+Pinch always zooms. The ambiguous input is the one-finger drag — it could mean "scrub" or
+"scroll the timeline" — so `WaveformZoomOptions.dragBehavior` picks:
+
+| Behaviour | Drag at 1× | Drag while zoomed | Use for |
+|---|---|---|---|
+| `.seek` *(default)* | seeks | seeks | Players — scrubbing is the point |
+| `.panWhenZoomed` | seeks | pans the visible range | Editors — the waveform is a timeline |
+
+```swift
+WaveformView(summary: summary, currentTime: t, viewport: $viewport, zoom: .editor)
+```
+
+Three presets cover the common cases:
+
+```swift
+.disabled      // no gestures; drive the viewport programmatically only
+.editor        // dragBehavior = .panWhenZoomed
+.inScrollView  // vertical drags scroll the enclosing list instead of seeking
+```
+
+Or build your own:
+
+```swift
+WaveformZoomOptions(
+    dragBehavior:           .panWhenZoomed,
+    maxZoomFactor:          20,
+    minVisibleDuration:     0.5,
+    resetsOnDoubleTap:      true,
+    yieldsToVerticalScroll: false
+)
+```
+
+### Inside a ScrollView
+
+A waveform row in a scrolling list has a real conflict: a `minimumDistance: 0` drag claims the
+touch immediately and the list stops scrolling. `.inScrollView` resolves it by attaching the
+gesture *simultaneously* rather than exclusively, and by withholding any seek or pan until the
+touch has travelled `scrollIntentThreshold` points — at which point a drag taller than it is wide
+is abandoned for the rest of the gesture. Taps still seek.
+
+```swift
+List(episodes) { episode in
+    WaveformView(
+        summary:     episode.summary,
+        currentTime: episode.position,
+        viewport:    $viewport,
+        zoom:        .inScrollView,
+        onSeek:      { seek(episode, to: $0) }
+    )
+    .frame(height: 44)
+}
+```
+
+### Double-tap
+
+Double-tapping resets to the full-duration view. The first tap of the pair still seeks — on a
+waveform a tap means "play from here", and suppressing it would mean delaying *every* tap by the
+double-tap interval. Set `resetsOnDoubleTap: false` to turn it off.
+
+### Driving it programmatically
+
+The viewport is an ordinary value type, so gestures and code can both move it:
+
+```swift
 // Jump to a specific region
-Button("Show bridge") {
-    viewport.visibleRange = 95...125   // seconds
-}
+viewport.visibleRange = 95...125   // seconds
 
-// Zoom 4× centred on the current playhead
-Button("Zoom in") {
-    let anchor = player.currentTime / summary.duration
-    viewport.zoom(to: 4, anchor: anchor)
-}
+// Zoom 4× centred on the playhead
+viewport.zoom(to: 4, anchor: player.currentTime / summary.duration)
+
+// Pan forward 10 seconds
+viewport.pan(by: 10)
 
 // Reset
 viewport.resetZoom()
 ```
 
-When `viewport` is `nil` (the default) or `zoomFactor == 1.0`, `WaveformView` behaves identically to previous versions — no breaking change.
+When `viewport` is `nil` (the default) or `zoomFactor == 1.0`, `WaveformView` behaves exactly as
+it did before 0.6.0 — no breaking change.
 
 ---
 
@@ -433,7 +513,27 @@ WaveformCache.remove(url: url, targetBars: 200)
 WaveformCache.clear()
 ```
 
-Cache key: filename + file size + mtime + bar count + format version. Stored in `~/Library/Caches/WaveformKit/`. No automatic eviction — see Known Limitations.
+Cache key: filename + file size + mtime + bar count + format version. Stored in
+`~/Library/Caches/WaveformKit/`.
+
+The cache is bounded by a byte budget and evicts least-recently-used entries once it is exceeded.
+"Recently used" counts reads as well as writes, so a frequently-opened file outlives a one-off
+import. Eviction runs automatically after every save.
+
+```swift
+// Default: 32 MB, on the order of 10 000 summaries at 200 bars
+WaveformCache.configuration = .default
+
+// Tighter budget — shrinking it evicts immediately rather than waiting for the next save
+WaveformCache.configuration = WaveformCache.Configuration(maximumBytes: 4 * 1024 * 1024)
+
+// Opt out of eviction entirely (pre-0.6.0 behaviour)
+WaveformCache.configuration = .unbounded
+
+// For a "Clear cache (12.4 MB)" settings row
+let bytes = WaveformCache.currentByteSize
+WaveformCache.evictIfNeeded()   // reclaim on demand
+```
 
 ---
 
@@ -572,33 +672,58 @@ WaveformColors(
 - **Exotic PCM formats** — the audio tap handles `Float32` and `Int16`. `Int24`, `Int32`, and big-endian variants are skipped (amplitude and bands read 0).
 - **iOS 17 / macOS 14 floor** — `@Observable` requires iOS 17+. An iOS 16 backport is on the roadmap.
 - **Long recordings** — `MicrophoneRecorder` halves the amplitude array when it exceeds `maxBins` (default 4000). Temporal resolution on the oldest portions degrades after each halving cycle.
-- **No zoom gestures yet** — `WaveformViewport` is complete but `MagnificationGesture` wiring ships in Phase 3.
-- **No automatic disk-cache eviction** — `WaveformCache` grows until cleared. LRU eviction ships in Phase 3.
+- **Zoom has no multi-resolution backing yet** — at high zoom factors the view resamples a slice of the same flat amplitude array, so detail is limited by `targetBars` at decode time. `WaveformSummaryPyramid` addresses this in Phase 4.
+- **Circular style and zoom** — pinch on `.circular` anchors horizontally, which is geometrically arbitrary on a radial layout. Zoom on circular works but is not the intended pairing.
 
 ---
 
 ## Roadmap
 
-**Phase 3 — Zoom, Pan, Cache Eviction**
+### Phase 3 — Close the Promises *(0.6.0, in progress)*
 
-- `MagnificationGesture` + `DragGesture` wired to `WaveformViewport`
-- `ScrollView`-aware gesture passthrough
+Completes the Phase 3 deliverables, retires the gaps between the documented API and the
+shipping behaviour, and brings the package to Swift 6.
+
+**Tier 1 — Viewport, wired** ✅ *complete*
+
+- ✅ `MagnifyGesture` + `DragGesture` bound to `WaveformViewport` — pinch anchored at the gesture
+  centroid, drag-to-pan, double-tap to reset
+- ✅ `ScrollView`-safe gesture composition via `WaveformZoomOptions.inScrollView`
+- ✅ `ResampleCache` LRU bound — a live pinch mints a new slice every frame, which the old
+  evict-on-summary-change policy never reclaimed
+- ✅ `WaveformCache` LRU eviction with a configurable byte budget
+- ✅ `AudioSource` wired into `WaveformLoader.load(source:)`
+
+**Tier 2 — Swift 6 and render quality**
+
+- `swift-tools-version: 6.0` with `swiftLanguageModes: [.v6, .v5]`; nonisolated-`deinit`
+  isolation fixed in `AVAudioEnginePlayer` and `AVAudioPlayerAdapter`
+- Strict-concurrency job added to CI
+- Peak-preserving resampling — mean-over-bins pooling flattens transients when downsampling
+  amplitudes the decoder has already reduced to RMS
+
+**Tier 3 — Adoption surface**
+
+- DocC catalog + `swift-docc-plugin` + `.spi.yml` for hosted documentation and Swift Package
+  Index platform badges
+- End-to-end decode tests against a synthesized `AVAudioFile` fixture — `AudioDecoder` and
+  `WaveformCache` currently have no direct coverage
+- tvOS / visionOS added to `Package.swift` platforms (the `#if os(...)` guards already exist)
+
+### Phase 4 — Rendering Evolution
+
 - `WaveformSummaryPyramid` — multi-resolution amplitude arrays for efficient high-zoom rendering
-- Disk cache LRU eviction with configurable size budget
-
-**Phase 4 — Rendering Evolution**
-
 - Optional Metal-backed renderer path for spectrograms and large bar counts
 - ProMotion 120 Hz `TimelineView` for `.dancingBars`
 
-**Phase 5 — Editor-Grade Tooling**
+### Phase 5 — Editor-Grade Tooling
 
 - Region selection gesture
 - RTL layout support
-- Explicit watchOS / tvOS targets
+- Explicit watchOS target
 - iOS 16 backport (`ObservableObject`)
 
-Phases 3–5 are sequenced by stability: each phase is tested and considered stable before the next begins.
+Phases are sequenced by stability: each phase is tested and considered stable before the next begins.
 
 ---
 

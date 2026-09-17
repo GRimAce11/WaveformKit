@@ -875,4 +875,339 @@ final class WaveformKitTests: XCTestCase {
         XCTAssertEqual(AudioInterruption.ended(shouldResume: true), .ended(shouldResume: true))
         XCTAssertNotEqual(AudioInterruption.ended(shouldResume: true), .ended(shouldResume: false))
     }
+
+    // MARK: - ResampleCache LRU (Phase 3)
+
+    func testResampleCacheStoresAndReturns() {
+        let cache = ResampleCache()
+        let id = UUID()
+        cache.set([0.1, 0.2], summaryID: id, count: 2, startIdx: 0, endIdx: 10)
+        XCTAssertEqual(cache.get(summaryID: id, count: 2, startIdx: 0, endIdx: 10), [0.1, 0.2])
+    }
+
+    func testResampleCacheMissesOnDifferentSlice() {
+        let cache = ResampleCache()
+        let id = UUID()
+        cache.set([0.1, 0.2], summaryID: id, count: 2, startIdx: 0, endIdx: 10)
+        XCTAssertNil(cache.get(summaryID: id, count: 2, startIdx: 1, endIdx: 10))
+        XCTAssertNil(cache.get(summaryID: id, count: 3, startIdx: 0, endIdx: 10))
+    }
+
+    func testResampleCacheDropsEverythingOnNewSummary() {
+        let cache = ResampleCache()
+        let first = UUID()
+        cache.set([0.1], summaryID: first, count: 1, startIdx: 0, endIdx: 10)
+        cache.set([0.2], summaryID: UUID(), count: 1, startIdx: 0, endIdx: 10)
+        XCTAssertEqual(cache.count, 1, "A new summary should evict every entry from the old one")
+        XCTAssertNil(cache.get(summaryID: first, count: 1, startIdx: 0, endIdx: 10))
+    }
+
+    func testResampleCacheStaysBoundedUnderPinch() {
+        // Simulates a live pinch: every frame asks for a slightly different visible slice.
+        // Before the LRU bound this grew one permanent entry per frame.
+        let cache = ResampleCache(capacity: 8)
+        let id = UUID()
+        for frame in 0..<200 {
+            cache.set([Float(frame)], summaryID: id, count: 100, startIdx: frame, endIdx: 500 - frame)
+        }
+        XCTAssertEqual(cache.count, 8, "Cache must not grow past its capacity during a gesture")
+    }
+
+    func testResampleCacheEvictsLeastRecentlyUsed() {
+        let cache = ResampleCache(capacity: 2)
+        let id = UUID()
+        cache.set([1], summaryID: id, count: 1, startIdx: 0, endIdx: 1)
+        cache.set([2], summaryID: id, count: 1, startIdx: 0, endIdx: 2)
+        // Touch the first entry so the second becomes the least recently used.
+        _ = cache.get(summaryID: id, count: 1, startIdx: 0, endIdx: 1)
+        cache.set([3], summaryID: id, count: 1, startIdx: 0, endIdx: 3)
+
+        XCTAssertEqual(cache.count, 2)
+        XCTAssertEqual(cache.get(summaryID: id, count: 1, startIdx: 0, endIdx: 1), [1],
+                       "Recently read entry should survive")
+        XCTAssertNil(cache.get(summaryID: id, count: 1, startIdx: 0, endIdx: 2),
+                     "Least recently used entry should have been evicted")
+        XCTAssertEqual(cache.get(summaryID: id, count: 1, startIdx: 0, endIdx: 3), [3])
+    }
+
+    func testResampleCacheCapacityIsAtLeastOne() {
+        let cache = ResampleCache(capacity: 0)
+        let id = UUID()
+        cache.set([1], summaryID: id, count: 1, startIdx: 0, endIdx: 1)
+        XCTAssertEqual(cache.count, 1)
+    }
+
+    // MARK: - WaveformZoomOptions (Phase 3)
+
+    func testZoomOptionsDefaultsPreserveSeekBehaviour() {
+        let options = WaveformZoomOptions()
+        XCTAssertTrue(options.isEnabled)
+        XCTAssertEqual(options.dragBehavior, .seek)
+        XCTAssertFalse(options.yieldsToVerticalScroll)
+        XCTAssertTrue(options.resetsOnDoubleTap)
+    }
+
+    func testZoomOptionsPresets() {
+        XCTAssertFalse(WaveformZoomOptions.disabled.isEnabled)
+        XCTAssertEqual(WaveformZoomOptions.editor.dragBehavior, .panWhenZoomed)
+        XCTAssertTrue(WaveformZoomOptions.inScrollView.yieldsToVerticalScroll)
+    }
+
+    func testZoomOptionsClampsNonsenseInput() {
+        let options = WaveformZoomOptions(
+            maxZoomFactor: 0.2, minVisibleDuration: -5, scrollIntentThreshold: -3
+        )
+        XCTAssertEqual(options.maxZoomFactor, 1, "Zoom factor below 1× is not a zoom")
+        XCTAssertEqual(options.minVisibleDuration, 0)
+        XCTAssertEqual(options.scrollIntentThreshold, 0)
+    }
+
+    func testZoomTargetMultipliesBaseByMagnification() {
+        let options = WaveformZoomOptions(maxZoomFactor: 50)
+        XCTAssertEqual(options.zoomTarget(base: 2, magnification: 3), 6, accuracy: 1e-9)
+        XCTAssertEqual(options.zoomTarget(base: 4, magnification: 0.5), 2, accuracy: 1e-9)
+    }
+
+    func testZoomTargetClampsToBounds() {
+        let options = WaveformZoomOptions(maxZoomFactor: 10)
+        XCTAssertEqual(options.zoomTarget(base: 8, magnification: 100), 10, accuracy: 1e-9,
+                       "Must not exceed maxZoomFactor")
+        XCTAssertEqual(options.zoomTarget(base: 2, magnification: 0.001), 1, accuracy: 1e-9,
+                       "Must not zoom out past the full duration")
+    }
+
+    func testZoomTargetRejectsNonFiniteMagnification() {
+        let options = WaveformZoomOptions()
+        XCTAssertEqual(options.zoomTarget(base: 3, magnification: .infinity), 3, accuracy: 1e-9)
+        XCTAssertEqual(options.zoomTarget(base: 3, magnification: .nan), 3, accuracy: 1e-9)
+    }
+
+    func testPanSecondsIsInvertedRelativeToDrag() {
+        // Dragging 100 pt right across a 200 pt view showing 10 s should move the window
+        // 5 s *earlier*, so the audio under the finger travels with it.
+        let seconds = WaveformZoomOptions.panSeconds(deltaPoints: 100, visibleSpan: 10, width: 200)
+        XCTAssertEqual(seconds, -5, accuracy: 1e-9)
+
+        let back = WaveformZoomOptions.panSeconds(deltaPoints: -100, visibleSpan: 10, width: 200)
+        XCTAssertEqual(back, 5, accuracy: 1e-9)
+    }
+
+    func testPanSecondsScalesWithZoom() {
+        // The same finger travel covers less time the further you are zoomed in.
+        let wide   = WaveformZoomOptions.panSeconds(deltaPoints: 50, visibleSpan: 100, width: 200)
+        let zoomed = WaveformZoomOptions.panSeconds(deltaPoints: 50, visibleSpan: 10,  width: 200)
+        XCTAssertLessThan(abs(zoomed), abs(wide))
+    }
+
+    func testPanSecondsGuardsDegenerateGeometry() {
+        XCTAssertEqual(WaveformZoomOptions.panSeconds(deltaPoints: 50, visibleSpan: 10, width: 0), 0)
+        XCTAssertEqual(WaveformZoomOptions.panSeconds(deltaPoints: 50, visibleSpan: 0, width: 200), 0)
+    }
+
+    // MARK: - Double-tap recognition (Phase 3)
+
+    func testDoubleTapWithinIntervalAndSlop() {
+        let first = TapState(lastTapTime: Date(timeIntervalSinceReferenceDate: 100),
+                             lastTapLocation: CGPoint(x: 50, y: 20))
+        XCTAssertTrue(WaveformView.isDoubleTap(
+            previous: first,
+            location: CGPoint(x: 55, y: 24),
+            time: Date(timeIntervalSinceReferenceDate: 100.15)
+        ))
+    }
+
+    func testDoubleTapRejectedWhenTooSlow() {
+        let first = TapState(lastTapTime: Date(timeIntervalSinceReferenceDate: 100),
+                             lastTapLocation: CGPoint(x: 50, y: 20))
+        XCTAssertFalse(WaveformView.isDoubleTap(
+            previous: first,
+            location: CGPoint(x: 50, y: 20),
+            time: Date(timeIntervalSinceReferenceDate: 100.6)
+        ))
+    }
+
+    func testDoubleTapRejectedWhenTooFarApart() {
+        let first = TapState(lastTapTime: Date(timeIntervalSinceReferenceDate: 100),
+                             lastTapLocation: CGPoint(x: 50, y: 20))
+        XCTAssertFalse(WaveformView.isDoubleTap(
+            previous: first,
+            location: CGPoint(x: 200, y: 20),
+            time: Date(timeIntervalSinceReferenceDate: 100.1)
+        ))
+    }
+
+    func testFirstTapIsNeverADoubleTap() {
+        // A fresh TapState sits at .distantPast, which must not read as a recent first tap.
+        XCTAssertFalse(WaveformView.isDoubleTap(
+            previous: TapState(),
+            location: .zero,
+            time: Date()
+        ))
+    }
+
+    // MARK: - AudioSource (Phase 3)
+
+    func testAudioSourceAccessors() {
+        let url = URL(fileURLWithPath: "/tmp/clip.m4a")
+        let fileSource = AudioSource.file(url)
+        XCTAssertEqual(fileSource.url, url)
+        XCTAssertNil(fileSource.summary)
+
+        let summary = WaveformSummary.demo(duration: 12)
+        let precomputed = AudioSource.precomputed(summary)
+        XCTAssertNil(precomputed.url)
+        XCTAssertEqual(precomputed.summary, summary)
+    }
+
+    @MainActor
+    func testLoaderResolvesPrecomputedSourceImmediately() {
+        let loader = WaveformLoader()
+        let summary = WaveformSummary.demo(duration: 42)
+
+        loader.load(source: .precomputed(summary))
+
+        // No decode, no async hop — .loaded must be visible on the very next line.
+        guard case .loaded(let loaded) = loader.state else {
+            return XCTFail("Precomputed source should resolve synchronously, got \(loader.state)")
+        }
+        XCTAssertEqual(loaded, summary)
+    }
+
+    @MainActor
+    func testLoaderFileSourceEntersLoadingState() {
+        let loader = WaveformLoader()
+        loader.load(source: .file(URL(fileURLWithPath: "/nonexistent/clip.m4a")))
+        XCTAssertTrue(loader.state.isLoading, "A file source must go through the decode path")
+        loader.cancel()
+    }
+
+    func testStaticLoaderReturnsPrecomputedSummary() async throws {
+        let summary = WaveformSummary.demo(duration: 7)
+        let result = try await WaveformLoader.load(source: .precomputed(summary))
+        XCTAssertEqual(result, summary)
+    }
+
+    // MARK: - WaveformCache eviction (Phase 3)
+
+    /// Points the cache at a scratch directory and restores the previous settings afterwards,
+    /// so the suite never touches the real Caches folder.
+    private func withTemporaryCache(
+        budget: Int,
+        _ body: (URL) throws -> Void
+    ) rethrows {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WaveformKitTests-\(UUID().uuidString)", isDirectory: true)
+        let previousDirectory = WaveformCache.directoryOverride
+        let previousConfig = WaveformCache.configuration
+        // Create it up front: an unbounded budget short-circuits eviction, so the cache's own
+        // lazy directory creation would never run for those cases.
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        WaveformCache.directoryOverride = dir
+        WaveformCache.configuration = WaveformCache.Configuration(maximumBytes: budget)
+        defer {
+            try? FileManager.default.removeItem(at: dir)
+            WaveformCache.directoryOverride = previousDirectory
+            WaveformCache.configuration = previousConfig
+        }
+        try body(dir)
+    }
+
+    /// Creates a real file so `fingerprint` has size and mtime attributes to key on.
+    private func makeSourceFile(_ dir: URL, name: String) throws -> URL {
+        let url = dir.appendingPathComponent(name)
+        try Data(repeating: 0, count: 64).write(to: url)
+        return url
+    }
+
+    func testCacheRoundTrip() throws {
+        try withTemporaryCache(budget: WaveformCache.Configuration.defaultMaximumBytes) { dir in
+            let audio = try makeSourceFile(dir, name: "a.wav")
+            let summary = WaveformSummary.demo(duration: 30, bars: 64)
+            WaveformCache.save(summary, url: audio, targetBars: 64)
+
+            let loaded = WaveformCache.load(url: audio, targetBars: 64)
+            XCTAssertEqual(loaded, summary)
+            XCTAssertNil(WaveformCache.load(url: audio, targetBars: 128),
+                         "A different bar count is a different cache entry")
+        }
+    }
+
+    func testCacheReportsCurrentByteSize() throws {
+        try withTemporaryCache(budget: WaveformCache.Configuration.defaultMaximumBytes) { dir in
+            XCTAssertEqual(WaveformCache.currentByteSize, 0)
+            let audio = try makeSourceFile(dir, name: "a.wav")
+            WaveformCache.save(.demo(duration: 30, bars: 200), url: audio, targetBars: 200)
+            XCTAssertGreaterThan(WaveformCache.currentByteSize, 0)
+        }
+    }
+
+    func testCacheEvictsDownToBudget() throws {
+        // Budget fits roughly one entry; saving several must not grow without bound.
+        try withTemporaryCache(budget: 4_000) { dir in
+            for i in 0..<10 {
+                let audio = try makeSourceFile(dir, name: "clip\(i).wav")
+                WaveformCache.save(.demo(duration: 30, bars: 200), url: audio, targetBars: 200)
+            }
+            XCTAssertLessThanOrEqual(
+                WaveformCache.currentByteSize, 4_000,
+                "Cache must stay inside its byte budget"
+            )
+            XCTAssertGreaterThan(WaveformCache.currentByteSize, 0, "Eviction must not empty the cache")
+        }
+    }
+
+    func testCacheEvictsLeastRecentlyUsedEntry() throws {
+        try withTemporaryCache(budget: .max) { dir in
+            let first  = try makeSourceFile(dir, name: "first.wav")
+            let second = try makeSourceFile(dir, name: "second.wav")
+            let summary = WaveformSummary.demo(duration: 30, bars: 200)
+
+            WaveformCache.save(summary, url: first,  targetBars: 200)
+            WaveformCache.save(summary, url: second, targetBars: 200)
+
+            // Read `first` back so it becomes the most recently used entry.  mtime has
+            // one-second resolution on some filesystems, so make the gap unambiguous.
+            Thread.sleep(forTimeInterval: 1.1)
+            XCTAssertNotNil(WaveformCache.load(url: first, targetBars: 200))
+
+            // Shrink the budget to hold about one entry and force eviction.
+            let oneEntry = WaveformCache.currentByteSize / 2 + 1
+            WaveformCache.configuration = WaveformCache.Configuration(maximumBytes: oneEntry)
+
+            XCTAssertNotNil(WaveformCache.load(url: first, targetBars: 200),
+                            "Recently read entry should survive eviction")
+            XCTAssertNil(WaveformCache.load(url: second, targetBars: 200),
+                         "Least recently used entry should have been evicted")
+        }
+    }
+
+    func testCacheUnboundedConfigurationNeverEvicts() throws {
+        try withTemporaryCache(budget: .max) { dir in
+            XCTAssertEqual(WaveformCache.configuration, .unbounded)
+            for i in 0..<5 {
+                let audio = try makeSourceFile(dir, name: "clip\(i).wav")
+                WaveformCache.save(.demo(duration: 30, bars: 200), url: audio, targetBars: 200)
+            }
+            XCTAssertEqual(WaveformCache.evictIfNeeded(), 0)
+            for i in 0..<5 {
+                let audio = dir.appendingPathComponent("clip\(i).wav")
+                XCTAssertNotNil(WaveformCache.load(url: audio, targetBars: 200))
+            }
+        }
+    }
+
+    func testCacheClearRemovesEverything() throws {
+        try withTemporaryCache(budget: .max) { dir in
+            let audio = try makeSourceFile(dir, name: "a.wav")
+            WaveformCache.save(.demo(duration: 30, bars: 64), url: audio, targetBars: 64)
+            XCTAssertNotNil(WaveformCache.load(url: audio, targetBars: 64))
+            WaveformCache.clear()
+            XCTAssertNil(WaveformCache.load(url: audio, targetBars: 64))
+        }
+    }
+
+    func testCacheConfigurationClampsNegativeBudget() {
+        XCTAssertEqual(WaveformCache.Configuration(maximumBytes: -1).maximumBytes, 0)
+        XCTAssertEqual(WaveformCache.Configuration.unbounded.maximumBytes, .max)
+    }
 }

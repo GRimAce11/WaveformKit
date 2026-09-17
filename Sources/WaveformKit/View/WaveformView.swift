@@ -24,10 +24,13 @@ public struct WaveformView: View {
     private let colors: WaveformColors
     private let markers: [WaveformMarker]
     private let viewportBinding: Binding<WaveformViewport>?
+    private let zoomOptions: WaveformZoomOptions
     private let onSeek: ((TimeInterval) -> Void)?
     private let onMarkerTap: ((WaveformMarker) -> Void)?
 
     @State private var dragState = DragState()
+    /// Survives across gestures so the second tap of a double-tap can be recognised.
+    @State private var tapState = TapState()
     /// Per-view-identity cache for resampled amplitude arrays.
     /// Lives in @State so SwiftUI preserves the same instance across re-renders.
     @State private var resampleCache = ResampleCache()
@@ -42,6 +45,7 @@ public struct WaveformView: View {
         colors: WaveformColors = WaveformColors(),
         markers: [WaveformMarker] = [],
         viewport: Binding<WaveformViewport>? = nil,
+        zoom: WaveformZoomOptions = WaveformZoomOptions(),
         onSeek: ((TimeInterval) -> Void)? = nil,
         onMarkerTap: ((WaveformMarker) -> Void)? = nil
     ) {
@@ -54,6 +58,7 @@ public struct WaveformView: View {
         self.colors         = colors
         self.markers        = markers
         self.viewportBinding = viewport
+        self.zoomOptions    = zoom
         self.onSeek         = onSeek
         self.onMarkerTap    = onMarkerTap
     }
@@ -83,7 +88,22 @@ public struct WaveformView: View {
         }
         .frame(width: width, height: height)
         .contentShape(Rectangle())
-        .gesture(seekGesture(size: size))
+        // Exactly one of these two is live.  Inside a scroll view the gesture must be
+        // *simultaneous* so the scroll view keeps receiving the same touch; everywhere else an
+        // exclusive gesture gives crisper scrubbing.
+        .gesture(
+            interactionGesture(size: size),
+            including: zoomOptions.yieldsToVerticalScroll ? .subviews : .all
+        )
+        .simultaneousGesture(
+            interactionGesture(size: size),
+            including: zoomOptions.yieldsToVerticalScroll ? .all : .subviews
+        )
+        .modifier(WaveformMagnifyModifier(
+            viewport: viewportBinding,
+            options: zoomOptions,
+            isEnabled: zoomEnabled
+        ))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabelText)
         .accessibilityValue(accessibilityValueText)
@@ -330,11 +350,41 @@ public struct WaveformView: View {
         return 1 + boost * CGFloat(amplitude)
     }
 
-    private func seekGesture(size: CGSize) -> some Gesture {
+    /// `true` when gestures have something to drive: zoom is enabled *and* a viewport binding
+    /// was supplied.  Without a binding there is no zoom state, so every gesture below is inert.
+    private var zoomEnabled: Bool {
+        zoomOptions.isEnabled && viewportBinding != nil
+    }
+
+    /// `true` when a one-finger drag should pan the timeline rather than seek.
+    private var dragPans: Bool {
+        guard zoomEnabled, zoomOptions.dragBehavior == .panWhenZoomed else { return false }
+        return viewportBinding?.wrappedValue.isZoomed == true
+    }
+
+    /// The single drag gesture behind scrubbing, panning, marker taps, and double-tap-to-reset.
+    ///
+    /// These all share one `DragGesture` rather than composing several recognisers, because they
+    /// are interpretations of the same touch and SwiftUI offers no way to arbitrate between
+    /// separate gestures after the fact.  Resolution order per touch:
+    ///
+    /// 1. Predominantly vertical, and `yieldsToVerticalScroll` is set → abandon, let the scroll
+    ///    view have it.
+    /// 2. Started on a marker and never moved → `onMarkerTap`.
+    /// 3. Moved past `dragThreshold` → pan (`.panWhenZoomed` while zoomed) or seek.
+    /// 4. Never moved → a tap, resolved on release so the second tap of a double-tap can reset
+    ///    the zoom instead of seeking.
+    private func interactionGesture(size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
-                guard summary.duration > 0, size.width > 0 else { return }
+                guard summary.duration > 0, size.width > 0, !dragState.rejected else { return }
 
+                let travelled = hypot(value.translation.width, value.translation.height)
+
+                // Resolve the marker hit-test first.  It claims nothing and costs one pass over
+                // `markers`, and it has to happen before the scroll gate below: a tap never
+                // travels far enough to clear that gate, so testing later would lose every
+                // marker tap in `.inScrollView` mode.
                 if !dragState.checkedFirstTouch {
                     dragState.checkedFirstTouch = true
                     if onMarkerTap != nil, !markers.isEmpty {
@@ -348,30 +398,106 @@ public struct WaveformView: View {
                     }
                 }
 
-                let translation = hypot(value.translation.width, value.translation.height)
-                if translation > Self.dragThreshold { dragState.hasDragged = true }
+                // Scroll arbitration: hold off on moving anything until the touch has travelled
+                // far enough to reveal its direction, then give vertical drags to the scroll view.
+                if zoomOptions.yieldsToVerticalScroll, !dragState.resolvedScrollIntent {
+                    guard travelled > zoomOptions.scrollIntentThreshold else { return }
+                    dragState.resolvedScrollIntent = true
+                    if abs(value.translation.height) > abs(value.translation.width) {
+                        dragState.rejected = true
+                        return
+                    }
+                }
 
-                // While the user is potentially tapping a marker (no drag yet), suppress seek so
-                // the marker's onTap fires cleanly on release.
-                if dragState.startedOnMarker != nil && !dragState.hasDragged { return }
+                if travelled > Self.dragThreshold { dragState.hasDragged = true }
 
-                let p = Self.seekProgress(for: value.location, in: size, style: style)
-                // Map the normalised seek position to absolute time, respecting any active viewport.
-                let seekTime: TimeInterval
-                if let vp = viewportBinding?.wrappedValue, vp.isZoomed {
-                    seekTime = vp.time(forVisibleProgress: p)
+                // Still a candidate marker tap — suppress movement handling so the marker's
+                // callback fires cleanly on release.
+                if dragState.startedOnMarker != nil, !dragState.hasDragged { return }
+                // A stationary touch stays a tap candidate and resolves in `onEnded`.
+                guard dragState.hasDragged else { return }
+
+                if dragPans {
+                    applyPan(totalTranslation: value.translation.width, size: size)
                 } else {
-                    seekTime = p * summary.duration
+                    applySeek(at: value.location, size: size)
                 }
-                onSeek?(seekTime)
             }
-            .onEnded { _ in
-                if let marker = dragState.startedOnMarker, !dragState.hasDragged {
-                    onMarkerTap?(marker)
-                }
+            .onEnded { value in
+                let state = dragState
                 dragState = DragState()
+
+                guard summary.duration > 0, size.width > 0, !state.rejected else { return }
+
+                if let marker = state.startedOnMarker, !state.hasDragged {
+                    onMarkerTap?(marker)
+                    return
+                }
+                guard !state.hasDragged else { return }
+
+                // Stationary touch → a tap.  Check for a double-tap before seeking.
+                if zoomEnabled, zoomOptions.resetsOnDoubleTap,
+                   Self.isDoubleTap(previous: tapState, location: value.location, time: value.time) {
+                    tapState = TapState()   // consume, so a triple tap is not two resets
+                    viewportBinding?.wrappedValue.resetZoom()
+                    return
+                }
+                tapState = TapState(lastTapTime: value.time, lastTapLocation: value.location)
+                applySeek(at: value.location, size: size)
             }
     }
+
+    /// Pan the viewport by the movement since the previous callback.
+    ///
+    /// `DragGesture` reports cumulative translation, so the incremental delta is tracked here;
+    /// the first frame of a pan only establishes the baseline, since by then the touch has
+    /// already travelled `dragThreshold` points that must not be applied as a jump.
+    private func applyPan(totalTranslation: CGFloat, size: CGSize) {
+        guard let binding = viewportBinding else { return }
+        guard dragState.isPanning else {
+            dragState.isPanning = true
+            dragState.lastPanTranslation = totalTranslation
+            return
+        }
+        let delta = totalTranslation - dragState.lastPanTranslation
+        dragState.lastPanTranslation = totalTranslation
+
+        var vp = binding.wrappedValue
+        let span = vp.visibleRange.upperBound - vp.visibleRange.lowerBound
+        vp.pan(by: WaveformZoomOptions.panSeconds(
+            deltaPoints: delta, visibleSpan: span, width: size.width
+        ))
+        binding.wrappedValue = vp
+    }
+
+    /// Map a touch location to a time and report it through `onSeek`, respecting any viewport.
+    private func applySeek(at location: CGPoint, size: CGSize) {
+        let p = Self.seekProgress(for: location, in: size, style: style)
+        let seekTime: TimeInterval
+        if let vp = viewportBinding?.wrappedValue, vp.isZoomed {
+            seekTime = vp.time(forVisibleProgress: p)
+        } else {
+            seekTime = p * summary.duration
+        }
+        onSeek?(seekTime)
+    }
+
+    /// Does this tap close a double-tap with the previous one? Pure, so it can be tested
+    /// without a gesture in flight.
+    static func isDoubleTap(previous: TapState, location: CGPoint, time: Date) -> Bool {
+        let elapsed = time.timeIntervalSince(previous.lastTapTime)
+        guard elapsed >= 0, elapsed < doubleTapInterval else { return false }
+        let drift = hypot(
+            location.x - previous.lastTapLocation.x,
+            location.y - previous.lastTapLocation.y
+        )
+        return drift < doubleTapSlop
+    }
+
+    /// Maximum gap between the two taps of a double-tap.  Matches the platform default.
+    static let doubleTapInterval: TimeInterval = 0.3
+    /// How far the second tap may land from the first and still count.
+    static let doubleTapSlop: CGFloat = 32
 
     private static let dragThreshold: CGFloat = 4
 
@@ -533,6 +659,65 @@ private struct DragState {
     var checkedFirstTouch: Bool = false
     var startedOnMarker: WaveformMarker?
     var hasDragged: Bool = false
+    /// Set once a `yieldsToVerticalScroll` drag has moved far enough to judge its direction.
+    var resolvedScrollIntent: Bool = false
+    /// The drag was judged vertical and handed to the enclosing scroll view.
+    var rejected: Bool = false
+    var isPanning: Bool = false
+    var lastPanTranslation: CGFloat = 0
+}
+
+/// Timestamp and location of the last completed tap, kept across gestures to recognise a
+/// double-tap.  Internal rather than private so `isDoubleTap` is reachable from tests.
+struct TapState {
+    var lastTapTime: Date = .distantPast
+    var lastTapLocation: CGPoint = .zero
+}
+
+/// Attaches the pinch-zoom gesture.
+///
+/// Split into its own modifier so the whole thing compiles out on tvOS, where `MagnifyGesture`
+/// does not exist, without littering `WaveformView.body` with `#if`.
+private struct WaveformMagnifyModifier: ViewModifier {
+    let viewport: Binding<WaveformViewport>?
+    let options: WaveformZoomOptions
+    let isEnabled: Bool
+
+    /// Zoom factor when the current pinch began.  `nil` between gestures.
+    @State private var baseZoomFactor: Double?
+
+    func body(content: Content) -> some View {
+        #if os(tvOS)
+        content
+        #else
+        content.simultaneousGesture(magnify, including: isEnabled ? .all : .subviews)
+        #endif
+    }
+
+    #if !os(tvOS)
+    private var magnify: some Gesture {
+        MagnifyGesture()
+            .onChanged { value in
+                guard let viewport else { return }
+                // `magnification` is cumulative from the start of the gesture, so it is applied
+                // against the factor captured on the first callback rather than the live one.
+                if baseZoomFactor == nil { baseZoomFactor = viewport.wrappedValue.zoomFactor }
+                let target = options.zoomTarget(
+                    base: baseZoomFactor ?? 1,
+                    magnification: value.magnification
+                )
+                var vp = viewport.wrappedValue
+                // `startAnchor` keeps the audio under the pinch centroid pinned in place.
+                vp.zoom(
+                    to: target,
+                    anchor: Double(value.startAnchor.x),
+                    minSpan: options.minVisibleDuration
+                )
+                viewport.wrappedValue = vp
+            }
+            .onEnded { _ in baseZoomFactor = nil }
+    }
+    #endif
 }
 
 // MARK: - WaveformLoader convenience init
@@ -561,6 +746,7 @@ extension WaveformView {
         colors: WaveformColors = WaveformColors(),
         markers: [WaveformMarker] = [],
         viewport: Binding<WaveformViewport>? = nil,
+        zoom: WaveformZoomOptions = WaveformZoomOptions(),
         onSeek: ((TimeInterval) -> Void)? = nil,
         onMarkerTap: ((WaveformMarker) -> Void)? = nil
     ) {
@@ -570,7 +756,7 @@ extension WaveformView {
                 summary: summary, currentTime: currentTime,
                 amplitude: amplitude, bands: bands,
                 style: style, movement: movement, colors: colors,
-                markers: markers, viewport: viewport,
+                markers: markers, viewport: viewport, zoom: zoom,
                 onSeek: onSeek, onMarkerTap: onMarkerTap
             )
         default:
