@@ -31,6 +31,7 @@ final class ResampleCache {
         var count: Int
         var startIdx: Int
         var endIdx: Int
+        var mode: WaveformResampleMode
     }
 
     private struct Entry {
@@ -49,23 +50,31 @@ final class ResampleCache {
         self.capacity = max(1, capacity)
     }
 
-    func get(summaryID: UUID, count: Int, startIdx: Int, endIdx: Int) -> [Float]? {
-        let key = Key(summaryID: summaryID, count: count, startIdx: startIdx, endIdx: endIdx)
+    func get(
+        summaryID: UUID, count: Int, startIdx: Int, endIdx: Int, mode: WaveformResampleMode
+    ) -> [Float]? {
+        let key = Key(
+            summaryID: summaryID, count: count, startIdx: startIdx, endIdx: endIdx, mode: mode
+        )
         guard let entry = store[key] else { return nil }
         clock &+= 1
         store[key]?.lastUsed = clock
         return entry.value
     }
 
-    func set(_ result: [Float], summaryID: UUID, count: Int, startIdx: Int, endIdx: Int) {
+    func set(
+        _ result: [Float], summaryID: UUID, count: Int, startIdx: Int, endIdx: Int,
+        mode: WaveformResampleMode
+    ) {
         // Evict stale entries the moment a new summary arrives.
         if summaryID != activeSummaryID {
             store.removeAll(keepingCapacity: true)
             activeSummaryID = summaryID
         }
         clock &+= 1
-        store[Key(summaryID: summaryID, count: count, startIdx: startIdx, endIdx: endIdx)] =
-            Entry(value: result, lastUsed: clock)
+        store[Key(
+            summaryID: summaryID, count: count, startIdx: startIdx, endIdx: endIdx, mode: mode
+        )] = Entry(value: result, lastUsed: clock)
         evictIfNeeded()
     }
 
@@ -84,15 +93,23 @@ final class ResampleCache {
 
 // MARK: - Vectorised resampler
 
-/// Downsample `src[startIdx..<endIdx]` to `targetCount` bars using mean-over-bins pooling.
+/// Downsample `src[startIdx..<endIdx]` to `targetCount` bars.
 ///
-/// Each output bar is the arithmetic mean of the source bins it covers.  `vDSP_sve`
-/// (vectorised sum) replaces the scalar `reduce(0, +)` loop from the original implementation,
-/// giving a ~4–8× speedup on ARM NEON for the typical 100–400 bar range.
+/// Each output bar covers a contiguous run of source bins and reduces them to one value —
+/// the largest under `.peak`, the arithmetic mean under `.mean`.  Both reductions are
+/// vectorised (`vDSP_maxv` / `vDSP_sve`), giving a ~4-8x speedup over a scalar loop on ARM
+/// NEON in the typical 100-400 bar range.
 ///
-/// This is the **only** place in the render path that should allocate;  the result is
-/// immediately stored in `ResampleCache` and reused until the summary changes.
-func resampleAmplitudes(src: [Float], startIdx: Int, endIdx: Int, targetCount: Int) -> [Float] {
+/// This is the **only** place in the render path that should allocate; the result goes
+/// straight into `ResampleCache` and is reused until the summary, bar count, visible slice,
+/// or mode changes.
+func resampleAmplitudes(
+    src: [Float],
+    startIdx: Int,
+    endIdx: Int,
+    targetCount: Int,
+    mode: WaveformResampleMode = .peak
+) -> [Float] {
     let sliceCount = endIdx - startIdx
     guard sliceCount > 0, targetCount > 0 else { return [] }
     if sliceCount == targetCount { return Array(src[startIdx..<endIdx]) }
@@ -107,9 +124,17 @@ func resampleAmplitudes(src: [Float], startIdx: Int, endIdx: Int, targetCount: I
             let localStart = Int(Double(i) * stride)
             let localEnd   = max(localStart + 1, min(sliceCount, Int(Double(i + 1) * stride)))
             let binCount   = localEnd - localStart
-            var sum: Float = 0
-            vDSP_sve(base + startIdx + localStart, 1, &sum, vDSP_Length(binCount))
-            out.append(sum / Float(binCount))
+            let window     = base + startIdx + localStart
+            switch mode {
+            case .peak:
+                var peak: Float = 0
+                vDSP_maxv(window, 1, &peak, vDSP_Length(binCount))
+                out.append(peak)
+            case .mean:
+                var sum: Float = 0
+                vDSP_sve(window, 1, &sum, vDSP_Length(binCount))
+                out.append(sum / Float(binCount))
+            }
         }
     }
     return out

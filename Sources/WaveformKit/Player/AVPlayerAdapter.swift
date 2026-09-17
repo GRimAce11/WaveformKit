@@ -11,8 +11,10 @@ public final class AVPlayerAdapter: WaveformPlayerAdapter {
 
     @ObservationIgnored
     private let player: AVPlayer
+    /// Holds the periodic time-observer token.  The token is non-Sendable, so a `@MainActor`
+    /// class cannot release it from its own nonisolated `deinit` under Swift 6.
     @ObservationIgnored
-    private var timeObserver: Any?
+    private let teardown = AudioTeardown()
     @ObservationIgnored
     private var statusObservation: NSKeyValueObservation?
     @ObservationIgnored
@@ -43,13 +45,16 @@ public final class AVPlayerAdapter: WaveformPlayerAdapter {
 
     private func installObservers(rate: Double) {
         let interval = CMTime(seconds: 1.0 / max(1, rate), preferredTimescale: 600)
-        timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] cmTime in
+        let timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] cmTime in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.currentTime = cmTime.seconds.isFinite ? cmTime.seconds : 0
                 if self.duration == 0 { self.refreshDuration() }
             }
         }
+        // Capture the player and token only — never `self`.
+        teardown.onDeinit = { [player] in player.removeTimeObserver(timeObserver) }
+
         rateObservation = player.observe(\.rate, options: [.new]) { [weak self] player, _ in
             MainActor.assumeIsolated {
                 self?.isPlaying = player.rate != 0
@@ -69,7 +74,8 @@ public final class AVPlayerAdapter: WaveformPlayerAdapter {
     }
 
     deinit {
-        if let timeObserver { player.removeTimeObserver(timeObserver) }
+        // `NSKeyValueObservation` is Sendable, so these are fine here; the time-observer token
+        // is not, which is why it lives on `teardown`.
         statusObservation?.invalidate()
         rateObservation?.invalidate()
     }

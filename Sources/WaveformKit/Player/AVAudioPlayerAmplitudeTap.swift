@@ -11,7 +11,7 @@ public final class AVAudioPlayerAmplitudeTap: AmplitudeTap {
     public let bands: [Float] = []
 
     @ObservationIgnored private let player: AVAudioPlayer
-    @ObservationIgnored private var timer: Timer?
+    @ObservationIgnored private var pollTask: Task<Void, Never>?
     @ObservationIgnored private var envelope = AmplitudeEnvelope()
     @ObservationIgnored private let pollInterval: TimeInterval
 
@@ -23,10 +23,12 @@ public final class AVAudioPlayerAmplitudeTap: AmplitudeTap {
     }
 
     private func startPolling() {
-        timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
+        pollTask?.cancel()
+        let interval = Duration.seconds(pollInterval)
+        pollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: interval)
+                guard !Task.isCancelled, let self else { return }
                 self.tick()
             }
         }
@@ -50,6 +52,7 @@ public final class AVAudioPlayerAmplitudeTap: AmplitudeTap {
     }
 
     deinit {
-        timer?.invalidate()
+        // `Task` is Sendable, so cancelling from a nonisolated deinit is legal under Swift 6.
+        pollTask?.cancel()
     }
 }

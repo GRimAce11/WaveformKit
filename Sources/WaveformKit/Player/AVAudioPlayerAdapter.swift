@@ -11,8 +11,12 @@ public final class AVAudioPlayerAdapter: WaveformPlayerAdapter {
 
     @ObservationIgnored
     private let player: AVAudioPlayer
+    /// Polling ticker.  A `Task` rather than a `Timer` for two reasons: it is `Sendable`, so
+    /// `deinit` can cancel it without touching main-actor state, and it keeps ticking during
+    /// scroll tracking — a `Timer` scheduled in the default run-loop mode does not, which froze
+    /// the playhead whenever the user scrolled a list containing the waveform.
     @ObservationIgnored
-    private var timer: Timer?
+    private var tickTask: Task<Void, Never>?
 
     public init(player: AVAudioPlayer, tickRate: Double = 30) {
         self.player = player
@@ -37,19 +41,22 @@ public final class AVAudioPlayerAdapter: WaveformPlayerAdapter {
     }
 
     private func startTicking(rate: Double) {
-        timer?.invalidate()
-        let interval = 1.0 / max(1, rate)
-        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
+        tickTask?.cancel()
+        let interval = Duration.seconds(1.0 / max(1, rate))
+        tickTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: interval)
+                guard !Task.isCancelled, let self else { return }
                 self.currentTime = self.player.currentTime
-                self.isPlaying = self.player.isPlaying
-                self.duration = self.player.duration
+                self.isPlaying   = self.player.isPlaying
+                self.duration    = self.player.duration
             }
         }
     }
 
     deinit {
-        timer?.invalidate()
+        // `Task` is Sendable, so cancelling it from a nonisolated deinit is legal under the
+        // Swift 6 language mode.  A `Timer?` would not be.
+        tickTask?.cancel()
     }
 }

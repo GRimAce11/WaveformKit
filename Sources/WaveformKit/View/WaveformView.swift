@@ -21,6 +21,7 @@ public struct WaveformView: View {
     private let bands: [Float]
     private let style: WaveformStyle
     private let movement: WaveformMovement
+    private let resampleMode: WaveformResampleMode
     private let colors: WaveformColors
     private let markers: [WaveformMarker]
     private let viewportBinding: Binding<WaveformViewport>?
@@ -42,6 +43,7 @@ public struct WaveformView: View {
         bands: [Float] = [],
         style: WaveformStyle = .bars(),
         movement: WaveformMovement = .progress,
+        resampleMode: WaveformResampleMode = .peak,
         colors: WaveformColors = WaveformColors(),
         markers: [WaveformMarker] = [],
         viewport: Binding<WaveformViewport>? = nil,
@@ -55,6 +57,7 @@ public struct WaveformView: View {
         self.bands          = bands
         self.style          = style
         self.movement       = movement
+        self.resampleMode   = resampleMode
         self.colors         = colors
         self.markers        = markers
         self.viewportBinding = viewport
@@ -164,8 +167,12 @@ public struct WaveformView: View {
         return CGPoint(x: x, y: size.height / 2)
     }
 
+    // The static helpers below are pure functions over their arguments.  `View` is a
+    // `@MainActor` protocol, so without `nonisolated` they inherit that isolation and cannot be
+    // called from a plain synchronous context — including from tests — under Swift 6.
+
     /// Public so apps with custom accessibility wrappers can reuse the same phrasing.
-    public static func markerAccessibilityLabel(for marker: WaveformMarker) -> String {
+    nonisolated public static func markerAccessibilityLabel(for marker: WaveformMarker) -> String {
         let startStr = formatTime(marker.time)
         let name = marker.label?.trimmingCharacters(in: .whitespaces)
         if marker.isRegion {
@@ -211,6 +218,7 @@ public struct WaveformView: View {
         bands: [Float] = [],
         style: WaveformStyle = .bars(),
         movement: WaveformMovement = .progress,
+        resampleMode: WaveformResampleMode = .peak,
         colors: WaveformColors = WaveformColors(),
         markers: [WaveformMarker] = [],
         scale: CGFloat = 2
@@ -222,6 +230,7 @@ public struct WaveformView: View {
             bands: bands,
             style: style,
             movement: movement,
+            resampleMode: resampleMode,
             colors: colors,
             markers: markers
         )
@@ -231,7 +240,7 @@ public struct WaveformView: View {
         return renderer.cgImage
     }
 
-    static func formatTime(_ t: TimeInterval) -> String {
+    nonisolated static func formatTime(_ t: TimeInterval) -> String {
         let total = Int(t.rounded())
         let minutes = total / 60
         let seconds = total % 60
@@ -329,7 +338,7 @@ public struct WaveformView: View {
 
     /// Smooth ping-pong shimmer in `[0, 1]` for `.idle` movement. Continuous and seamless across
     /// cycle boundaries (no jumps to 0). Pure function for unit testing.
-    static func idleProgress(at time: TimeInterval, cycle: TimeInterval) -> Double {
+    nonisolated static func idleProgress(at time: TimeInterval, cycle: TimeInterval) -> Double {
         guard cycle > 0 else { return 0 }
         let theta = (time / cycle) * 2 * .pi
         return (1 - cos(theta)) / 2
@@ -484,7 +493,7 @@ public struct WaveformView: View {
 
     /// Does this tap close a double-tap with the previous one? Pure, so it can be tested
     /// without a gesture in flight.
-    static func isDoubleTap(previous: TapState, location: CGPoint, time: Date) -> Bool {
+    nonisolated static func isDoubleTap(previous: TapState, location: CGPoint, time: Date) -> Bool {
         let elapsed = time.timeIntervalSince(previous.lastTapTime)
         guard elapsed >= 0, elapsed < doubleTapInterval else { return false }
         let drift = hypot(
@@ -495,14 +504,14 @@ public struct WaveformView: View {
     }
 
     /// Maximum gap between the two taps of a double-tap.  Matches the platform default.
-    static let doubleTapInterval: TimeInterval = 0.3
+    nonisolated static let doubleTapInterval: TimeInterval = 0.3
     /// How far the second tap may land from the first and still count.
-    static let doubleTapSlop: CGFloat = 32
+    nonisolated static let doubleTapSlop: CGFloat = 32
 
     private static let dragThreshold: CGFloat = 4
 
     /// Map a touch point to 0...1 progress. Linear for X-axis styles, angular for circular.
-    private static func seekProgress(for location: CGPoint, in size: CGSize, style: WaveformStyle) -> Double {
+    nonisolated private static func seekProgress(for location: CGPoint, in size: CGSize, style: WaveformStyle) -> Double {
         switch style {
         case .circular:
             let center = CGPoint(x: size.width / 2, y: size.height / 2)
@@ -520,7 +529,7 @@ public struct WaveformView: View {
     /// Returns the marker nearest to `location` within `hitRadius` points (measured as horizontal
     /// distance for linear styles, arc length for `.circular`), or `nil` if none qualify. Region
     /// markers report a distance of 0 when the touch is inside their span.
-    static func hitTestMarker(
+    nonisolated static func hitTestMarker(
         _ markers: [WaveformMarker],
         at location: CGPoint,
         in size: CGSize,
@@ -557,7 +566,7 @@ public struct WaveformView: View {
     }
 
     /// Angular hit-test for circular style. Compare arc-length distances along the outer ring.
-    private static func hitTestCircular(
+    nonisolated private static func hitTestCircular(
         _ markers: [WaveformMarker],
         at location: CGPoint,
         in size: CGSize,
@@ -591,7 +600,7 @@ public struct WaveformView: View {
     }
 
     /// Minimum distance between two normalized [0, 1] progress values on a circular ring.
-    private static func angularDistance(_ a: Double, _ b: Double) -> CGFloat {
+    nonisolated private static func angularDistance(_ a: Double, _ b: Double) -> CGFloat {
         let raw = abs(a - b)
         return CGFloat(min(raw, 1 - raw))
     }
@@ -625,24 +634,25 @@ public struct WaveformView: View {
 
         if let cached = resampleCache.get(
             summaryID: summary.id, count: count,
-            startIdx: startIdx, endIdx: endIdx
+            startIdx: startIdx, endIdx: endIdx, mode: resampleMode
         ) {
             return cached
         }
 
         let result = resampleAmplitudes(
-            src: src, startIdx: startIdx, endIdx: endIdx, targetCount: count
+            src: src, startIdx: startIdx, endIdx: endIdx,
+            targetCount: count, mode: resampleMode
         )
         resampleCache.set(
             result, summaryID: summary.id, count: count,
-            startIdx: startIdx, endIdx: endIdx
+            startIdx: startIdx, endIdx: endIdx, mode: resampleMode
         )
         return result
     }
 
     /// Rolling sinusoidal placeholder used when `.idle` is requested with no loaded summary, so
     /// loading-skeleton UIs render a sensible shape for the shimmer to scan across.
-    static func placeholderAmplitudes(count: Int) -> [Float] {
+    nonisolated static func placeholderAmplitudes(count: Int) -> [Float] {
         guard count > 0 else { return [] }
         var out: [Float] = []
         out.reserveCapacity(count)
@@ -743,6 +753,7 @@ extension WaveformView {
         bands: [Float] = [],
         style: WaveformStyle = .bars(),
         movement: WaveformMovement = .progress,
+        resampleMode: WaveformResampleMode = .peak,
         colors: WaveformColors = WaveformColors(),
         markers: [WaveformMarker] = [],
         viewport: Binding<WaveformViewport>? = nil,
@@ -755,7 +766,8 @@ extension WaveformView {
             self.init(
                 summary: summary, currentTime: currentTime,
                 amplitude: amplitude, bands: bands,
-                style: style, movement: movement, colors: colors,
+                style: style, movement: movement, resampleMode: resampleMode,
+                colors: colors,
                 markers: markers, viewport: viewport, zoom: zoom,
                 onSeek: onSeek, onMarkerTap: onMarkerTap
             )
@@ -764,7 +776,7 @@ extension WaveformView {
             self.init(
                 summary: .empty, currentTime: 0,
                 amplitude: amplitude, bands: bands,
-                style: style, movement: .idle, colors: colors
+                style: style, movement: .idle, resampleMode: resampleMode, colors: colors
             )
         }
     }

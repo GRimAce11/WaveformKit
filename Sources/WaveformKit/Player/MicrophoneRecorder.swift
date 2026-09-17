@@ -72,8 +72,10 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
     @ObservationIgnored private var wallStartedAt: TimeInterval = 0
     @ObservationIgnored private var pausedAccumulator: TimeInterval = 0
     @ObservationIgnored private var pausedAt: TimeInterval?
-    @ObservationIgnored private var tickTimer: Timer?
-    @ObservationIgnored private var binTimer: Timer?
+    /// Polling tickers.  `Task`s rather than `Timer`s: they are `Sendable` so `deinit` can
+    /// cancel them, and unlike default-mode `Timer`s they keep firing while the user scrolls.
+    @ObservationIgnored private var tickTask: Task<Void, Never>?
+    @ObservationIgnored private var binTask: Task<Void, Never>?
     @ObservationIgnored private var amplitudeEnvelope = AmplitudeEnvelope()
     @ObservationIgnored private var bandEnvelopes: [AmplitudeEnvelope]
     @ObservationIgnored private let pollInterval: TimeInterval
@@ -81,8 +83,9 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
     @ObservationIgnored private let outputURL: URL?
     @ObservationIgnored private var outputFile: AVAudioFile?
     @ObservationIgnored private let onInterruption: (@MainActor (MicrophoneInterruption) -> Void)?
-    @ObservationIgnored private var interruptionObserver: NSObjectProtocol?
-    @ObservationIgnored private var routeObserver: NSObjectProtocol?
+    /// Holds the notification observers and the engine shutdown, so they are released from a
+    /// nonisolated `deinit` that is allowed to touch them.  See `AudioTeardown`.
+    @ObservationIgnored private let teardown = AudioTeardown()
     @ObservationIgnored private var summaryPublishCounter: Int = 0
     @ObservationIgnored private let summaryPublishEveryNBins: Int
 
@@ -118,6 +121,15 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
             sampleRate: 0,
             channelCount: 1
         )
+
+        // Capture the engine only — never `self`, or the recorder would never deallocate and
+        // this cleanup would never run.
+        teardown.onDeinit = { [engine] in
+            if engine.isRunning {
+                engine.stop()
+                engine.inputNode.removeTap(onBus: 0)
+            }
+        }
     }
 
     public func start() async throws {
@@ -221,10 +233,7 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
         guard isRecording else { return }
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
-        tickTimer?.invalidate()
-        tickTimer = nil
-        binTimer?.invalidate()
-        binTimer = nil
+        stopTickTimers()
         isRecording = false
         isPaused = false
         removeSystemObservers()
@@ -246,44 +255,45 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
 
     private func installSystemObservers() {
         #if os(iOS) || os(tvOS) || os(visionOS)
+        // Tokens are appended, so guard against a second install leaking the first pair.
+        guard teardown.observers.isEmpty else { return }
         let center = NotificationCenter.default
-        interruptionObserver = center.addObserver(
+        teardown.observers.append(center.addObserver(
             forName: AVAudioSession.interruptionNotification,
             object: nil,
             queue: .main
         ) { [weak self] note in
-            let userInfo = note.userInfo
+            // Pull the Sendable primitives out here, on the notification's own thread:
+            // `userInfo` is `[AnyHashable: Any]?`, which cannot cross into the main actor
+            // under the Swift 6 language mode.
+            let rawType    = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+            let rawOptions = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt
             Task { @MainActor [weak self] in
-                self?.handleInterruption(userInfo: userInfo)
+                self?.handleInterruption(rawType: rawType, rawOptions: rawOptions)
             }
-        }
-        routeObserver = center.addObserver(
+        })
+        teardown.observers.append(center.addObserver(
             forName: AVAudioSession.routeChangeNotification,
             object: nil,
             queue: .main
         ) { [weak self] note in
-            let userInfo = note.userInfo
+            let rawReason = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
             Task { @MainActor [weak self] in
-                self?.handleRouteChange(userInfo: userInfo)
+                self?.handleRouteChange(rawReason: rawReason)
             }
-        }
+        })
         #endif
     }
 
     private func removeSystemObservers() {
-        let center = NotificationCenter.default
-        if let o = interruptionObserver { center.removeObserver(o) }
-        if let o = routeObserver { center.removeObserver(o) }
-        interruptionObserver = nil
-        routeObserver = nil
+        teardown.removeObservers()
     }
 
     #if os(iOS) || os(tvOS) || os(visionOS)
-    private func handleInterruption(userInfo: [AnyHashable: Any]?) {
+    private func handleInterruption(rawType: UInt?, rawOptions: UInt?) {
         guard isRecording,
-              let userInfo,
-              let raw = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
-              let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+              let rawType,
+              let type = AVAudioSession.InterruptionType(rawValue: rawType) else { return }
         switch type {
         case .began:
             // The system has already paused our engine. Sync state so the UI reflects that.
@@ -293,8 +303,7 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
             }
             onInterruption?(.began)
         case .ended:
-            let optsRaw = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
-            let opts = AVAudioSession.InterruptionOptions(rawValue: optsRaw)
+            let opts = AVAudioSession.InterruptionOptions(rawValue: rawOptions ?? 0)
             let shouldResume = opts.contains(.shouldResume)
             onInterruption?(.ended(shouldResume: shouldResume))
             if shouldResume, autoResumeAfterInterruption, isPaused {
@@ -305,11 +314,10 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
         }
     }
 
-    private func handleRouteChange(userInfo: [AnyHashable: Any]?) {
+    private func handleRouteChange(rawReason: UInt?) {
         guard isRecording,
-              let userInfo,
-              let raw = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
-              let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
+              let rawReason,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: rawReason) else { return }
         let mapped: MicrophoneInterruption.RouteChangeReason
         switch reason {
         case .oldDeviceUnavailable: mapped = .oldDeviceUnavailable
@@ -319,8 +327,8 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
         onInterruption?(.audioRouteChanged(reason: mapped))
     }
     #else
-    private func handleInterruption(userInfo: [AnyHashable: Any]?) {}
-    private func handleRouteChange(userInfo: [AnyHashable: Any]?) {}
+    private func handleInterruption(rawType: UInt?, rawOptions: UInt?) {}
+    private func handleRouteChange(rawReason: UInt?) {}
     #endif
 
     /// Drop the in-progress (or just-finished) capture, including any file written via `outputURL`.
@@ -339,12 +347,30 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
     }
 
     private func startTickTimers() {
-        tickTimer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.tick() }
+        stopTickTimers()
+        let tickInterval = Duration.seconds(pollInterval)
+        tickTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: tickInterval)
+                guard !Task.isCancelled, let self else { return }
+                self.tick()
+            }
         }
-        binTimer = Timer.scheduledTimer(withTimeInterval: binInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.appendBin() }
+        let binSleep = Duration.seconds(binInterval)
+        binTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: binSleep)
+                guard !Task.isCancelled, let self else { return }
+                self.appendBin()
+            }
         }
+    }
+
+    private func stopTickTimers() {
+        tickTask?.cancel()
+        tickTask = nil
+        binTask?.cancel()
+        binTask = nil
     }
 
     private func tick() {
@@ -427,15 +453,11 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
     }
 
     deinit {
-        tickTimer?.invalidate()
-        binTimer?.invalidate()
-        let center = NotificationCenter.default
-        if let o = interruptionObserver { center.removeObserver(o) }
-        if let o = routeObserver { center.removeObserver(o) }
-        if engine.isRunning {
-            engine.stop()
-            engine.inputNode.removeTap(onBus: 0)
-        }
+        // Only `Task`s here — they are Sendable, so a nonisolated deinit may cancel them.
+        // Observer removal and engine shutdown belong to `teardown`, which this releases
+        // on the way out.
+        tickTask?.cancel()
+        binTask?.cancel()
     }
 
     private static func requestPermission() async -> Bool {

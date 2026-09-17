@@ -28,6 +28,24 @@ jobs:
       - name: Test
         run: swift test -v
 
+  strict:
+    name: Swift 6 mode, warnings as errors
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: swift --version
+
+      # The package declares swiftLanguageModes: [.v6, .v5], so this compiles under the Swift 6
+      # language mode. Promoting warnings to errors keeps concurrency regressions from landing
+      # as "just a warning" and quietly accumulating.
+      - name: Build (warnings as errors)
+        run: swift build -Xswiftc -warnings-as-errors
+
+      - name: Build tests (warnings as errors)
+        run: swift build --build-tests -Xswiftc -warnings-as-errors
+
   ios-build:
     name: Build for iOS Simulator
     runs-on: macos-latest

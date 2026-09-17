@@ -53,15 +53,16 @@ public final class AVAudioEnginePlayer: WaveformPlayerAdapter, AmplitudeTap {
     @ObservationIgnored private let file: AVAudioFile
     @ObservationIgnored private let storage: AmplitudeTapStorage
     @ObservationIgnored private let pollInterval: TimeInterval
-    @ObservationIgnored private var timer: Timer?
+    /// Polling ticker.  A `Task` rather than a `Timer`: it is `Sendable` so `deinit` can cancel
+    /// it, and unlike a default-mode `Timer` it keeps ticking while the user scrolls.
+    @ObservationIgnored private var tickTask: Task<Void, Never>?
     @ObservationIgnored private var amplitudeEnvelope = AmplitudeEnvelope()
     @ObservationIgnored private var bandEnvelopes: [AmplitudeEnvelope]
     @ObservationIgnored private var seekOffset: TimeInterval = 0
     @ObservationIgnored private var tapInstalled = false
     @ObservationIgnored private let onInterruption: (@MainActor (AudioInterruption) -> Void)?
-    @ObservationIgnored private var interruptionObserver: NSObjectProtocol?
-    @ObservationIgnored private var routeObserver: NSObjectProtocol?
     @ObservationIgnored private var wasPlayingBeforeInterruption: Bool = false
+    @ObservationIgnored private let teardown = AudioTeardown()
 
     public init(
         url: URL,
@@ -84,6 +85,15 @@ public final class AVAudioEnginePlayer: WaveformPlayerAdapter, AmplitudeTap {
         let sourceFormat = file.processingFormat
         self.storage = AmplitudeTapStorage(bandCount: bandCount, sampleRate: Float(sourceFormat.sampleRate))
         self.duration = Double(file.length) / sourceFormat.sampleRate
+
+        // Capture the engine and node only — never `self`, or the player would never
+        // deallocate and this cleanup would never run.
+        teardown.onDeinit = { [engine, playerNode] in
+            if engine.isRunning {
+                playerNode.stop()
+                engine.stop()
+            }
+        }
 
         engine.attach(playerNode)
         engine.connect(playerNode, to: engine.mainMixerNode, format: sourceFormat)
@@ -115,8 +125,7 @@ public final class AVAudioEnginePlayer: WaveformPlayerAdapter, AmplitudeTap {
         guard isPlaying else { return }
         playerNode.pause()
         isPlaying = false
-        timer?.invalidate()
-        timer = nil
+        stopTimer()
     }
 
     /// Stop playback and reset to the beginning. Different from `pause()`: drains the scheduled
@@ -124,8 +133,7 @@ public final class AVAudioEnginePlayer: WaveformPlayerAdapter, AmplitudeTap {
     public func stop() {
         playerNode.stop()
         isPlaying = false
-        timer?.invalidate()
-        timer = nil
+        stopTimer()
         removeSystemObservers()
         wasPlayingBeforeInterruption = false
         seekOffset = 0
@@ -172,8 +180,7 @@ public final class AVAudioEnginePlayer: WaveformPlayerAdapter, AmplitudeTap {
         guard isPlaying else { return }
         isPlaying = false
         didFinish = true
-        timer?.invalidate()
-        timer = nil
+        stopTimer()
         currentTime = duration
     }
 
@@ -187,10 +194,20 @@ public final class AVAudioEnginePlayer: WaveformPlayerAdapter, AmplitudeTap {
     }
 
     private func startTimer() {
-        timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.tick() }
+        stopTimer()
+        let interval = Duration.seconds(pollInterval)
+        tickTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: interval)
+                guard !Task.isCancelled, let self else { return }
+                self.tick()
+            }
         }
+    }
+
+    private func stopTimer() {
+        tickTask?.cancel()
+        tickTask = nil
     }
 
     private func tick() {
@@ -213,57 +230,54 @@ public final class AVAudioEnginePlayer: WaveformPlayerAdapter, AmplitudeTap {
 
     private func installSystemObservers() {
         #if os(iOS) || os(tvOS) || os(visionOS)
-        guard interruptionObserver == nil else { return }
+        guard teardown.observers.isEmpty else { return }
         let center = NotificationCenter.default
-        interruptionObserver = center.addObserver(
+        teardown.observers.append(center.addObserver(
             forName: AVAudioSession.interruptionNotification,
             object: nil,
             queue: .main
         ) { [weak self] note in
-            let userInfo = note.userInfo
+            // Pull the Sendable primitives out here, on the notification's own thread:
+            // `userInfo` is `[AnyHashable: Any]?`, which cannot cross into the main actor
+            // under the Swift 6 language mode.
+            let rawType    = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+            let rawOptions = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt
             Task { @MainActor [weak self] in
-                self?.handleInterruption(userInfo: userInfo)
+                self?.handleInterruption(rawType: rawType, rawOptions: rawOptions)
             }
-        }
-        routeObserver = center.addObserver(
+        })
+        teardown.observers.append(center.addObserver(
             forName: AVAudioSession.routeChangeNotification,
             object: nil,
             queue: .main
         ) { [weak self] note in
-            let userInfo = note.userInfo
+            let rawReason = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
             Task { @MainActor [weak self] in
-                self?.handleRouteChange(userInfo: userInfo)
+                self?.handleRouteChange(rawReason: rawReason)
             }
-        }
+        })
         #endif
     }
 
     private func removeSystemObservers() {
-        let center = NotificationCenter.default
-        if let o = interruptionObserver { center.removeObserver(o) }
-        if let o = routeObserver { center.removeObserver(o) }
-        interruptionObserver = nil
-        routeObserver = nil
+        teardown.removeObservers()
     }
 
     #if os(iOS) || os(tvOS) || os(visionOS)
-    private func handleInterruption(userInfo: [AnyHashable: Any]?) {
-        guard let userInfo,
-              let raw = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
-              let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+    private func handleInterruption(rawType: UInt?, rawOptions: UInt?) {
+        guard let rawType,
+              let type = AVAudioSession.InterruptionType(rawValue: rawType) else { return }
         switch type {
         case .began:
             if isPlaying {
                 wasPlayingBeforeInterruption = true
                 playerNode.pause()
                 isPlaying = false
-                timer?.invalidate()
-                timer = nil
+                stopTimer()
             }
             onInterruption?(.began)
         case .ended:
-            let optsRaw = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
-            let opts = AVAudioSession.InterruptionOptions(rawValue: optsRaw)
+            let opts = AVAudioSession.InterruptionOptions(rawValue: rawOptions ?? 0)
             let shouldResume = opts.contains(.shouldResume)
             onInterruption?(.ended(shouldResume: shouldResume))
             if shouldResume, autoResumeAfterInterruption, wasPlayingBeforeInterruption {
@@ -277,10 +291,9 @@ public final class AVAudioEnginePlayer: WaveformPlayerAdapter, AmplitudeTap {
         }
     }
 
-    private func handleRouteChange(userInfo: [AnyHashable: Any]?) {
-        guard let userInfo,
-              let raw = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
-              let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
+    private func handleRouteChange(rawReason: UInt?) {
+        guard let rawReason,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: rawReason) else { return }
         let mapped: AudioInterruption.RouteChangeReason
         switch reason {
         case .oldDeviceUnavailable: mapped = .oldDeviceUnavailable
@@ -290,8 +303,8 @@ public final class AVAudioEnginePlayer: WaveformPlayerAdapter, AmplitudeTap {
         onInterruption?(.audioRouteChanged(reason: mapped))
     }
     #else
-    private func handleInterruption(userInfo: [AnyHashable: Any]?) {}
-    private func handleRouteChange(userInfo: [AnyHashable: Any]?) {}
+    private func handleInterruption(rawType: UInt?, rawOptions: UInt?) {}
+    private func handleRouteChange(rawReason: UInt?) {}
     #endif
 
     // Called from AVAudioEngine's internal render thread — must be allocation-free.
@@ -310,14 +323,7 @@ public final class AVAudioEnginePlayer: WaveformPlayerAdapter, AmplitudeTap {
         storage.writeFromAudioThread(amplitude: min(1, max(0, rms)))
     }
 
-    deinit {
-        timer?.invalidate()
-        let center = NotificationCenter.default
-        if let o = interruptionObserver { center.removeObserver(o) }
-        if let o = routeObserver { center.removeObserver(o) }
-        if engine.isRunning {
-            playerNode.stop()
-            engine.stop()
-        }
-    }
+    // No `deinit` here on purpose: engine shutdown and observer removal belong to
+    // `EnginePlayerTeardown`, which this class releases on the way out.  The ticker `Task`
+    // captures `self` weakly, so it stops on its next iteration.
 }

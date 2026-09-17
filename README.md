@@ -2,10 +2,10 @@
 
 A SwiftUI waveform visualization framework for audio apps. Handles decoding, caching, FFT analysis, async loading lifecycle, and rendering in one package — with a realtime-safe audio pipeline and zero external dependencies.
 
-![Swift](https://img.shields.io/badge/Swift-5.9+-orange?logo=swift)
+![Swift](https://img.shields.io/badge/Swift-6.0+-orange?logo=swift)
 ![Platforms](https://img.shields.io/badge/Platforms-iOS%2017%20%7C%20macOS%2014-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
-![Tests](https://img.shields.io/badge/Tests-114%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/Tests-119%20passing-brightgreen)
 
 ---
 
@@ -15,6 +15,7 @@ Existing options force a choice: a static-image generator with no interaction (*
 
 Key design decisions that differentiate it:
 
+- **Swift 6 ready** — builds clean under the Swift 6 language mode with complete concurrency checking; CI fails the build on any new warning.
 - **Zero-allocation audio callbacks** — FFT processing uses pre-allocated scratch buffers and vectorised vDSP operations. No heap allocations on the audio render thread.
 - **Async loading lifecycle** — `WaveformLoader` drives `WaveformState` (`.idle → .loading(progress) → .loaded / .failed`) so loading, progress, and error states are first-class, not afterthoughts.
 - **Extensible renderer protocol** — `WaveformRenderer` lets you supply a custom drawing implementation without forking. Built-in styles are backed by the same protocol surface.
@@ -39,6 +40,7 @@ Key design decisions that differentiate it:
 - Disk waveform cache keyed by file identity, with an LRU byte budget
 - VoiceOver: adjustable element with `X:XX of Y:YY` value; per-marker accessibility children
 - `WaveformView.snapshot(...)` → `CGImage` for thumbnails and share sheets
+- Peak- or mean-pooled resampling (`WaveformResampleMode`) — transients survive a low bar count
 - Zero external dependencies — AVFoundation, MediaToolbox, Accelerate only
 
 ---
@@ -46,8 +48,11 @@ Key design decisions that differentiate it:
 ## Requirements
 
 - iOS 17.0+ / macOS 14.0+
-- Swift 5.9+
-- Xcode 15+
+- Swift 6.0+ / Xcode 16+
+
+The package builds under the **Swift 6 language mode** with complete concurrency checking and no
+warnings. It declares `swiftLanguageModes: [.v6, .v5]`, so it still compiles if your project pins
+a Swift 5 language mode — but the toolchain itself must be 6.0 or newer.
 
 ---
 
@@ -233,6 +238,31 @@ WaveformView(summary: s, currentTime: t,
 | `.reactive(boost:)` | Bar height scales with live amplitude; no progress fill |
 | `.combined(boost:)` | Progress fill AND reactive amplitude on the played portion |
 | `.idle` | Ping-pong shimmer — loading skeleton or paused state |
+
+---
+
+## Resample Modes
+
+A summary is decoded at a fixed resolution (200 bins by default) and a view can ask for any
+number of bars. When there are more bins than bars, each bar has to stand for several bins —
+`resampleMode` decides how they collapse.
+
+| Mode | Each bar becomes | Looks like |
+|---|---|---|
+| `.peak` *(default)* | the loudest bin it covers | Transients survive: drum hits, plosives, edits |
+| `.mean` | the average of its bins | Smooth, flat, low-contrast |
+
+```swift
+WaveformView(summary: s, currentTime: t, style: .bars(count: 60), resampleMode: .peak)
+```
+
+Because the decoder has already reduced each bin to an RMS value, `.mean` is an average of
+averages — peaks erode quickly as the bar count drops, and a busy track flattens toward a
+uniform block. `.peak` keeps the shape recognisable as *that* recording. Use `.mean` when you
+deliberately want an even, ambient level-meter look.
+
+> **Changed in 0.6.0:** `.peak` is the new default. Pre-0.6.0 behaviour was mean pooling —
+> pass `resampleMode: .mean` to keep the old appearance.
 
 ---
 
@@ -671,6 +701,7 @@ WaveformColors(
 - **`AVAudioPlayer` has no FFT** — `AVAudioPlayerAmplitudeTap.bands` is always empty. Use `AVAudioEnginePlayer` for the local-file + spectrum combination.
 - **Exotic PCM formats** — the audio tap handles `Float32` and `Int16`. `Int24`, `Int32`, and big-endian variants are skipped (amplitude and bands read 0).
 - **iOS 17 / macOS 14 floor** — `@Observable` requires iOS 17+. An iOS 16 backport is on the roadmap.
+- **Swift 6 toolchain required** — `Package.swift` uses `swift-tools-version: 6.0`, so Xcode 15 can no longer resolve the package. The language *mode* is still selectable; the toolchain is not.
 - **Long recordings** — `MicrophoneRecorder` halves the amplitude array when it exceeds `maxBins` (default 4000). Temporal resolution on the oldest portions degrades after each halving cycle.
 - **Zoom has no multi-resolution backing yet** — at high zoom factors the view resamples a slice of the same flat amplitude array, so detail is limited by `targetBars` at decode time. `WaveformSummaryPyramid` addresses this in Phase 4.
 - **Circular style and zoom** — pinch on `.circular` anchors horizontally, which is geometrically arbitrary on a radial layout. Zoom on circular works but is not the intended pairing.
@@ -694,13 +725,14 @@ shipping behaviour, and brings the package to Swift 6.
 - ✅ `WaveformCache` LRU eviction with a configurable byte budget
 - ✅ `AudioSource` wired into `WaveformLoader.load(source:)`
 
-**Tier 2 — Swift 6 and render quality**
+**Tier 2 — Swift 6 and render quality** ✅ *complete*
 
-- `swift-tools-version: 6.0` with `swiftLanguageModes: [.v6, .v5]`; nonisolated-`deinit`
-  isolation fixed in `AVAudioEnginePlayer` and `AVAudioPlayerAdapter`
-- Strict-concurrency job added to CI
-- Peak-preserving resampling — mean-over-bins pooling flattens transients when downsampling
-  amplitudes the decoder has already reduced to RMS
+- ✅ `swift-tools-version: 6.0` with `swiftLanguageModes: [.v6, .v5]`; the package builds under
+  the Swift 6 language mode with zero warnings
+- ✅ Nonisolated-`deinit` isolation fixed across all six player/recorder types — polling `Timer`s
+  became `Task`s, and engine/observer teardown moved to `AudioTeardown`
+- ✅ CI job building with `-warnings-as-errors`
+- ✅ `WaveformResampleMode` with peak pooling as the new default
 
 **Tier 3 — Adoption surface**
 

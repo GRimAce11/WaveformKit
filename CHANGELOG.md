@@ -56,7 +56,51 @@ in 0.5.0 with complete arithmetic but no gestures; it is now driven by touch.
 - `WaveformCache` no longer grows without bound. Previously it was documented as a known
   limitation and only `clear()` reclaimed space.
 
-**Tests: 114 total (+30 from 0.5.0)**
+**Swift 6 language mode**
+
+- `Package.swift` moves to `swift-tools-version: 6.0` with `swiftLanguageModes: [.v6, .v5]`.
+  The package builds under the Swift 6 language mode with complete concurrency checking and
+  zero warnings.
+- Nonisolated-`deinit` isolation fixed across every player and recorder. A `@MainActor` class's
+  `deinit` is nonisolated and cannot touch non-Sendable main-actor state, which affected
+  `AVAudioEnginePlayer`, `AVAudioPlayerAdapter`, `AVAudioPlayerAmplitudeTap`, `AVPlayerAdapter`,
+  `AVPlayerAmplitudeTap`, and `MicrophoneRecorder`.
+- New internal `AudioTeardown` owns notification observers, engine shutdown, and `AVPlayer`
+  time-observer tokens, so that cleanup runs from a `deinit` that is allowed to do it.
+- The pure static helpers on `WaveformView` (`markerAccessibilityLabel(for:)` and friends) are
+  now `nonisolated`. `View` is a `@MainActor` protocol, so they previously could not be called
+  from a synchronous non-main context. This is a relaxation, not a breaking change.
+- Audio-session notifications now extract their Sendable primitives (interruption type, options,
+  route-change reason) inside the notification closure rather than sending the whole
+  `[AnyHashable: Any]` `userInfo` across to the main actor. This code is inside
+  `#if os(iOS) || os(tvOS) || os(visionOS)`, so it is invisible to a macOS `swift build` — the
+  iOS build job is what catches it.
+- CI gains a job that builds with `-warnings-as-errors`.
+
+**Resample modes**
+
+- New `WaveformResampleMode` (`.peak` / `.mean`) and a `resampleMode:` parameter on both
+  `WaveformView` initialisers and on `WaveformView.snapshot(...)`.
+- `resampleAmplitudes` gains a `mode:` parameter; peak pooling uses `vDSP_maxv`.
+- `ResampleCache.Key` includes the mode, so switching modes cannot return a stale array.
+
+### Changed (visual)
+
+- **Resampling now defaults to `.peak` instead of mean pooling.** When a view asks for fewer
+  bars than the summary has bins, each bar is the loudest bin it covers rather than the average.
+  Waveforms gain contrast and keep their transients; a busy track no longer flattens toward a
+  uniform block as the bar count drops. Pass `resampleMode: .mean` to restore the old look.
+- Polling `Timer`s became `Task`s throughout. Besides the concurrency fix, this means playhead
+  and amplitude updates no longer stall during scroll tracking — a default-mode `Timer` does not
+  fire while a scroll view is tracking, which froze the playhead mid-scroll.
+
+### Removed
+
+- Support for Swift 5.9 and 5.10 **toolchains**. `swift-tools-version: 6.0` cannot be parsed by
+  Xcode 15. The language *mode* is still selectable via `swiftLanguageModes`; the toolchain
+  floor is not. Requirements are now Swift 6.0+ / Xcode 16+.
+
+**Tests: 119 total (+35 from 0.5.0)**
 
 
 ## [0.5.0] - 2026-05-19

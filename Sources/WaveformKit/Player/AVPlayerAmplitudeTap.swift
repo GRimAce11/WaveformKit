@@ -65,7 +65,7 @@ final class AmplitudeTapStorage: @unchecked Sendable {
         os_unfair_lock_unlock(&lock)
     }
 
-    /// Called from the main thread poll timer. Returns a snapshot of the latest values.
+    /// Called from the main-thread poll task. Returns a snapshot of the latest values.
     func snapshot() -> (amplitude: Float, bands: [Float]) {
         os_unfair_lock_lock(&lock)
         defer { os_unfair_lock_unlock(&lock) }
@@ -101,7 +101,7 @@ public final class AVPlayerAmplitudeTap: AmplitudeTap {
     @ObservationIgnored private let storage: AmplitudeTapStorage
     @ObservationIgnored private var tap: MTAudioProcessingTap?
     @ObservationIgnored private weak var item: AVPlayerItem?
-    @ObservationIgnored private var timer: Timer?
+    @ObservationIgnored private var pollTask: Task<Void, Never>?
     @ObservationIgnored private var amplitudeEnvelope = AmplitudeEnvelope()
     @ObservationIgnored private var bandEnvelopes: [AmplitudeEnvelope]
     @ObservationIgnored private let pollInterval: TimeInterval
@@ -179,10 +179,13 @@ public final class AVPlayerAmplitudeTap: AmplitudeTap {
     }
 
     private func startPolling() {
-        timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.tick()
+        pollTask?.cancel()
+        let interval = Duration.seconds(pollInterval)
+        pollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: interval)
+                guard !Task.isCancelled, let self else { return }
+                self.tick()
             }
         }
     }
@@ -197,7 +200,8 @@ public final class AVPlayerAmplitudeTap: AmplitudeTap {
     }
 
     deinit {
-        timer?.invalidate()
+        // `Task` is Sendable, so cancelling from a nonisolated deinit is legal under Swift 6.
+        pollTask?.cancel()
         Task { @MainActor [weak item] in
             item?.audioMix = nil
         }

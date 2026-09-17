@@ -822,13 +822,59 @@ final class WaveformKitTests: XCTestCase {
         XCTAssertEqual(result, src)
     }
 
-    func testResampleDownsample() {
-        // 4 bins → 2 bins: each output is mean of 2 input bins.
+    func testResampleDownsampleMean() {
+        // 4 bins → 2 bins: each output is the mean of 2 input bins.
         let src: [Float] = [0.2, 0.4, 0.6, 0.8]
-        let result = resampleAmplitudes(src: src, startIdx: 0, endIdx: 4, targetCount: 2)
+        let result = resampleAmplitudes(src: src, startIdx: 0, endIdx: 4, targetCount: 2, mode: .mean)
         XCTAssertEqual(result.count, 2)
         XCTAssertEqual(result[0], 0.3, accuracy: 1e-5)
         XCTAssertEqual(result[1], 0.7, accuracy: 1e-5)
+    }
+
+    func testResampleDownsamplePeak() {
+        // Same input, peak pooling: each output is the loudest of the 2 bins it covers.
+        let src: [Float] = [0.2, 0.4, 0.6, 0.8]
+        let result = resampleAmplitudes(src: src, startIdx: 0, endIdx: 4, targetCount: 2, mode: .peak)
+        XCTAssertEqual(result.count, 2)
+        XCTAssertEqual(result[0], 0.4, accuracy: 1e-5)
+        XCTAssertEqual(result[1], 0.8, accuracy: 1e-5)
+    }
+
+    func testResampleDefaultsToPeak() {
+        let src: [Float] = [0.2, 0.4, 0.6, 0.8]
+        let explicit = resampleAmplitudes(src: src, startIdx: 0, endIdx: 4, targetCount: 2, mode: .peak)
+        let implicit = resampleAmplitudes(src: src, startIdx: 0, endIdx: 4, targetCount: 2)
+        XCTAssertEqual(explicit, implicit)
+    }
+
+    func testResamplePeakPreservesTransient() {
+        // One loud spike buried in a quiet run: the reason peak is the default.  Mean pooling
+        // dilutes it by the bin count; peak keeps it at full height.
+        var src = [Float](repeating: 0.1, count: 64)
+        src[20] = 1.0
+        let peak = resampleAmplitudes(src: src, startIdx: 0, endIdx: 64, targetCount: 8, mode: .peak)
+        let mean = resampleAmplitudes(src: src, startIdx: 0, endIdx: 64, targetCount: 8, mode: .mean)
+
+        XCTAssertEqual(peak.max() ?? 0, 1.0, accuracy: 1e-5, "Peak pooling must keep the spike")
+        XCTAssertLessThan(mean.max() ?? 0, 0.3, "Mean pooling averages the spike away")
+    }
+
+    func testResampleModesAgreeWhenNoPooling() {
+        // Upsampling gives every output bar a single source bin, so both modes must match.
+        let src: [Float] = [0.2, 0.8]
+        XCTAssertEqual(
+            resampleAmplitudes(src: src, startIdx: 0, endIdx: 2, targetCount: 4, mode: .peak),
+            resampleAmplitudes(src: src, startIdx: 0, endIdx: 2, targetCount: 4, mode: .mean)
+        )
+    }
+
+    func testResampleCacheKeyIncludesMode() {
+        // Without mode in the key, switching modes would return the previous mode's array.
+        let cache = ResampleCache()
+        let id = UUID()
+        cache.set([0.9], summaryID: id, count: 1, startIdx: 0, endIdx: 4, mode: .peak)
+        XCTAssertNil(cache.get(summaryID: id, count: 1, startIdx: 0, endIdx: 4, mode: .mean))
+        XCTAssertEqual(cache.get(summaryID: id, count: 1, startIdx: 0, endIdx: 4, mode: .peak), [0.9])
     }
 
     func testResampleUpsample() {
@@ -881,25 +927,25 @@ final class WaveformKitTests: XCTestCase {
     func testResampleCacheStoresAndReturns() {
         let cache = ResampleCache()
         let id = UUID()
-        cache.set([0.1, 0.2], summaryID: id, count: 2, startIdx: 0, endIdx: 10)
-        XCTAssertEqual(cache.get(summaryID: id, count: 2, startIdx: 0, endIdx: 10), [0.1, 0.2])
+        cache.set([0.1, 0.2], summaryID: id, count: 2, startIdx: 0, endIdx: 10, mode: .peak)
+        XCTAssertEqual(cache.get(summaryID: id, count: 2, startIdx: 0, endIdx: 10, mode: .peak), [0.1, 0.2])
     }
 
     func testResampleCacheMissesOnDifferentSlice() {
         let cache = ResampleCache()
         let id = UUID()
-        cache.set([0.1, 0.2], summaryID: id, count: 2, startIdx: 0, endIdx: 10)
-        XCTAssertNil(cache.get(summaryID: id, count: 2, startIdx: 1, endIdx: 10))
-        XCTAssertNil(cache.get(summaryID: id, count: 3, startIdx: 0, endIdx: 10))
+        cache.set([0.1, 0.2], summaryID: id, count: 2, startIdx: 0, endIdx: 10, mode: .peak)
+        XCTAssertNil(cache.get(summaryID: id, count: 2, startIdx: 1, endIdx: 10, mode: .peak))
+        XCTAssertNil(cache.get(summaryID: id, count: 3, startIdx: 0, endIdx: 10, mode: .peak))
     }
 
     func testResampleCacheDropsEverythingOnNewSummary() {
         let cache = ResampleCache()
         let first = UUID()
-        cache.set([0.1], summaryID: first, count: 1, startIdx: 0, endIdx: 10)
-        cache.set([0.2], summaryID: UUID(), count: 1, startIdx: 0, endIdx: 10)
+        cache.set([0.1], summaryID: first, count: 1, startIdx: 0, endIdx: 10, mode: .peak)
+        cache.set([0.2], summaryID: UUID(), count: 1, startIdx: 0, endIdx: 10, mode: .peak)
         XCTAssertEqual(cache.count, 1, "A new summary should evict every entry from the old one")
-        XCTAssertNil(cache.get(summaryID: first, count: 1, startIdx: 0, endIdx: 10))
+        XCTAssertNil(cache.get(summaryID: first, count: 1, startIdx: 0, endIdx: 10, mode: .peak))
     }
 
     func testResampleCacheStaysBoundedUnderPinch() {
@@ -908,7 +954,7 @@ final class WaveformKitTests: XCTestCase {
         let cache = ResampleCache(capacity: 8)
         let id = UUID()
         for frame in 0..<200 {
-            cache.set([Float(frame)], summaryID: id, count: 100, startIdx: frame, endIdx: 500 - frame)
+            cache.set([Float(frame)], summaryID: id, count: 100, startIdx: frame, endIdx: 500 - frame, mode: .peak)
         }
         XCTAssertEqual(cache.count, 8, "Cache must not grow past its capacity during a gesture")
     }
@@ -916,24 +962,24 @@ final class WaveformKitTests: XCTestCase {
     func testResampleCacheEvictsLeastRecentlyUsed() {
         let cache = ResampleCache(capacity: 2)
         let id = UUID()
-        cache.set([1], summaryID: id, count: 1, startIdx: 0, endIdx: 1)
-        cache.set([2], summaryID: id, count: 1, startIdx: 0, endIdx: 2)
+        cache.set([1], summaryID: id, count: 1, startIdx: 0, endIdx: 1, mode: .peak)
+        cache.set([2], summaryID: id, count: 1, startIdx: 0, endIdx: 2, mode: .peak)
         // Touch the first entry so the second becomes the least recently used.
-        _ = cache.get(summaryID: id, count: 1, startIdx: 0, endIdx: 1)
-        cache.set([3], summaryID: id, count: 1, startIdx: 0, endIdx: 3)
+        _ = cache.get(summaryID: id, count: 1, startIdx: 0, endIdx: 1, mode: .peak)
+        cache.set([3], summaryID: id, count: 1, startIdx: 0, endIdx: 3, mode: .peak)
 
         XCTAssertEqual(cache.count, 2)
-        XCTAssertEqual(cache.get(summaryID: id, count: 1, startIdx: 0, endIdx: 1), [1],
+        XCTAssertEqual(cache.get(summaryID: id, count: 1, startIdx: 0, endIdx: 1, mode: .peak), [1],
                        "Recently read entry should survive")
-        XCTAssertNil(cache.get(summaryID: id, count: 1, startIdx: 0, endIdx: 2),
+        XCTAssertNil(cache.get(summaryID: id, count: 1, startIdx: 0, endIdx: 2, mode: .peak),
                      "Least recently used entry should have been evicted")
-        XCTAssertEqual(cache.get(summaryID: id, count: 1, startIdx: 0, endIdx: 3), [3])
+        XCTAssertEqual(cache.get(summaryID: id, count: 1, startIdx: 0, endIdx: 3, mode: .peak), [3])
     }
 
     func testResampleCacheCapacityIsAtLeastOne() {
         let cache = ResampleCache(capacity: 0)
         let id = UUID()
-        cache.set([1], summaryID: id, count: 1, startIdx: 0, endIdx: 1)
+        cache.set([1], summaryID: id, count: 1, startIdx: 0, endIdx: 1, mode: .peak)
         XCTAssertEqual(cache.count, 1)
     }
 
