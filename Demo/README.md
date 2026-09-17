@@ -55,3 +55,19 @@ Test Waveform/
 ## License
 
 MIT — same as WaveformKit.
+
+## Recording README media
+
+Both screens used for the README GIFs can be opened directly with launch arguments, so a
+capture is deterministic instead of depending on simulated taps landing on the right row:
+
+```bash
+xcrun simctl launch <device> com.sam.metro.Test-Waveform \
+    -demoScreen "Style Gallery" -demoMovement reactive
+```
+
+`-demoScreen` takes any row title from the home list. `-demoMovement` accepts
+`progress`, `reactive`, `combined`, or `idle`, and applies to the Style Gallery.
+
+Pair it with `xcrun simctl status_bar <device> override --time 9:41 ...` for a clean
+status bar before recording with `xcrun simctl io <device> recordVideo`.

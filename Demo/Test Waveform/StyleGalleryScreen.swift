@@ -7,7 +7,22 @@ struct StyleGalleryScreen: View {
 
     private let summary: WaveformSummary = .demo(duration: 30, bars: 200, seed: 7)
 
-    @State private var movement: WaveformMovement = .progress
+    /// Initial movement mode, overridable with `-demoMovement <progress|reactive|combined|idle>`.
+    /// Used by the README GIF recording script so a capture can start in an animated mode
+    /// without needing a simulated tap on the picker.
+    static var launchMovement: WaveformMovement? {
+        let args = ProcessInfo.processInfo.arguments
+        guard let i = args.firstIndex(of: "-demoMovement"), i + 1 < args.count else { return nil }
+        switch args[i + 1] {
+        case "reactive": return .reactive(boost: 1.4)
+        case "combined": return .combined(boost: 1.0)
+        case "idle":     return .idle
+        case "progress": return .progress
+        default:         return nil
+        }
+    }
+
+    @State private var movement: WaveformMovement = StyleGalleryScreen.launchMovement ?? .progress
     @State private var progress: Double = 0.4
     @State private var accentColor: Color = .blue
 

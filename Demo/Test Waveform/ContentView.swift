@@ -38,7 +38,28 @@ struct HomeScreen: View {
              iconColor: .teal),
     ]
 
+    /// Screen to open directly, from a `-demoScreen <title>` launch argument.
+    ///
+    /// Used to record README GIFs: the recording script launches straight into one screen so the
+    /// capture is deterministic and does not depend on simulated taps landing on the right row.
+    private static var launchScreen: String? {
+        let args = ProcessInfo.processInfo.arguments
+        guard let i = args.firstIndex(of: "-demoScreen"), i + 1 < args.count else { return nil }
+        return args[i + 1]
+    }
+
     var body: some View {
+        if let title = Self.launchScreen {
+            NavigationStack {
+                destination(for: Demo(title: title, subtitle: "", icon: "", iconColor: .blue))
+                    .navigationBarTitleDisplayMode(.inline)
+            }
+        } else {
+            home
+        }
+    }
+
+    private var home: some View {
         NavigationStack {
             List(demos) { demo in
                 NavigationLink { destination(for: demo) } label: {

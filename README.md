@@ -2,6 +2,10 @@
 
 A SwiftUI waveform visualization framework for audio apps. Handles decoding, caching, FFT analysis, async loading lifecycle, and rendering in one package — with a realtime-safe audio pipeline and zero external dependencies.
 
+<p align="center">
+  <img src=".github/media/waveform-hero.gif" alt="A mirrored-bars waveform reacting to live audio" width="100%" />
+</p>
+
 ![Swift](https://img.shields.io/badge/Swift-6.0+-orange?logo=swift)
 ![Platforms](https://img.shields.io/badge/Platforms-iOS%2017%20%7C%20macOS%2014%20%7C%20visionOS%201-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
@@ -205,6 +209,12 @@ let summary = try await WaveformLoader.load(url: url, targetBars: 200)
 ---
 
 ## Wave Styles
+
+<p align="center">
+  <img src=".github/media/styles.gif" alt="bars, mirroredBars and dancingBars animating under reactive movement" width="660" />
+</p>
+
+<p align="center"><em>Recorded from the bundled demo app — <code>.bars</code>, <code>.mirroredBars</code> and <code>.dancingBars</code> under <code>.reactive</code> movement.</em></p>
 
 | Style | Appearance | Typical Use |
 |---|---|---|
