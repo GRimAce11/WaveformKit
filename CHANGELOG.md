@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-17
+
+Phase 3 in full: the viewport gets gestures, the package moves to the Swift 6 language mode, and
+the adoption surface (docs, decoder tests, visionOS) is filled in. Three groups of changes are
+worth reading before upgrading: the **toolchain floor** rises to Swift 6.0 / Xcode 16, waveform
+**rendering changes appearance** by default, and tap-to-seek now resolves on touch-up.
+
 ### Added
 
 **Zoom and pan gestures** — completes the Phase 3 Tier 1 deliverable. `WaveformViewport` shipped

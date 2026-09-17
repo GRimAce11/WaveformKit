@@ -64,7 +64,7 @@ a Swift 5 language mode — but the toolchain itself must be 6.0 or newer.
 **Package.swift:**
 ```swift
 dependencies: [
-    .package(url: "https://github.com/GRimAce11/WaveformKit.git", from: "0.5.0")
+    .package(url: "https://github.com/GRimAce11/WaveformKit.git", from: "0.6.0")
 ]
 ```
 
