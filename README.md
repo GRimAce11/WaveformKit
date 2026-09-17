@@ -3,9 +3,9 @@
 A SwiftUI waveform visualization framework for audio apps. Handles decoding, caching, FFT analysis, async loading lifecycle, and rendering in one package — with a realtime-safe audio pipeline and zero external dependencies.
 
 ![Swift](https://img.shields.io/badge/Swift-6.0+-orange?logo=swift)
-![Platforms](https://img.shields.io/badge/Platforms-iOS%2017%20%7C%20macOS%2014-blue)
+![Platforms](https://img.shields.io/badge/Platforms-iOS%2017%20%7C%20macOS%2014%20%7C%20visionOS%201-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
-![Tests](https://img.shields.io/badge/Tests-119%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/Tests-129%20passing-brightgreen)
 
 ---
 
@@ -42,12 +42,13 @@ Key design decisions that differentiate it:
 - `WaveformView.snapshot(...)` → `CGImage` for thumbnails and share sheets
 - Peak- or mean-pooled resampling (`WaveformResampleMode`) — transients survive a low bar count
 - Zero external dependencies — AVFoundation, MediaToolbox, Accelerate only
+- DocC documentation hosted on Swift Package Index
 
 ---
 
 ## Requirements
 
-- iOS 17.0+ / macOS 14.0+
+- iOS 17.0+ / macOS 14.0+ / visionOS 1.0+
 - Swift 6.0+ / Xcode 16+
 
 The package builds under the **Swift 6 language mode** with complete concurrency checking and no
@@ -702,6 +703,7 @@ WaveformColors(
 - **Exotic PCM formats** — the audio tap handles `Float32` and `Int16`. `Int24`, `Int32`, and big-endian variants are skipped (amplitude and bands read 0).
 - **iOS 17 / macOS 14 floor** — `@Observable` requires iOS 17+. An iOS 16 backport is on the roadmap.
 - **Swift 6 toolchain required** — `Package.swift` uses `swift-tools-version: 6.0`, so Xcode 15 can no longer resolve the package. The language *mode* is still selectable; the toolchain is not.
+- **No tvOS** — SwiftUI marks `DragGesture` unavailable on tvOS, so seeking, panning, marker taps, and double-tap-to-reset cannot compile there. Everything else in the package is tvOS-clean; support needs a focus-engine interaction model, which is Phase 5.
 - **Long recordings** — `MicrophoneRecorder` halves the amplitude array when it exceeds `maxBins` (default 4000). Temporal resolution on the oldest portions degrades after each halving cycle.
 - **Zoom has no multi-resolution backing yet** — at high zoom factors the view resamples a slice of the same flat amplitude array, so detail is limited by `targetBars` at decode time. `WaveformSummaryPyramid` addresses this in Phase 4.
 - **Circular style and zoom** — pinch on `.circular` anchors horizontally, which is geometrically arbitrary on a radial layout. Zoom on circular works but is not the intended pairing.
@@ -734,13 +736,16 @@ shipping behaviour, and brings the package to Swift 6.
 - ✅ CI job building with `-warnings-as-errors`
 - ✅ `WaveformResampleMode` with peak pooling as the new default
 
-**Tier 3 — Adoption surface**
+**Tier 3 — Adoption surface** ✅ *complete*
 
-- DocC catalog + `swift-docc-plugin` + `.spi.yml` for hosted documentation and Swift Package
-  Index platform badges
-- End-to-end decode tests against a synthesized `AVAudioFile` fixture — `AudioDecoder` and
-  `WaveformCache` currently have no direct coverage
-- tvOS / visionOS added to `Package.swift` platforms (the `#if os(...)` guards already exist)
+- ✅ DocC catalog (landing page + three articles) and `.spi.yml` for hosted documentation and
+  Swift Package Index platform badges. No `swift-docc-plugin` dependency — Swift Package Index
+  builds DocC itself, so the zero-dependency promise holds
+- ✅ End-to-end decode tests against a synthesized `AVAudioFile` — `AudioDecoder` had no direct
+  coverage at all
+- ✅ visionOS added to `Package.swift` platforms, with an iOS/visionOS CI build matrix
+- ❌ tvOS **not** added: `DragGesture` is unavailable there, so the entire interaction path fails
+  to compile. Moved to Phase 5, where it needs a focus-engine model rather than a platform line
 
 ### Phase 4 — Rendering Evolution
 
@@ -752,6 +757,8 @@ shipping behaviour, and brings the package to Swift 6.
 
 - Region selection gesture
 - RTL layout support
+- tvOS support — needs a focus-engine interaction model, since `DragGesture` and `MagnifyGesture`
+  are both unavailable on the platform
 - Explicit watchOS target
 - iOS 16 backport (`ObservableObject`)
 

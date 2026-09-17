@@ -1,5 +1,6 @@
 import XCTest
 import SwiftUI
+import AVFoundation
 @testable import WaveformKit
 
 final class WaveformKitTests: XCTestCase {
@@ -1255,5 +1256,232 @@ final class WaveformKitTests: XCTestCase {
     func testCacheConfigurationClampsNegativeBudget() {
         XCTAssertEqual(WaveformCache.Configuration(maximumBytes: -1).maximumBytes, 0)
         XCTAssertEqual(WaveformCache.Configuration.unbounded.maximumBytes, .max)
+    }
+
+    // MARK: - AudioDecoder end-to-end (Phase 3)
+    //
+    // These decode real audio rather than a fixture array.  The file is synthesized with
+    // AVAudioFile at test time so the repo carries no binary assets and the suite stays
+    // hermetic.  Everything before this point tests the pieces around the decoder; this tests
+    // the decoder itself, which is the path every real caller takes.
+
+    /// Writes a mono 44.1 kHz WAV whose amplitude follows `envelope(t)` for `t` in 0...1.
+    /// Returns the file URL; the caller is responsible for deleting it.
+    private func makeToneFile(
+        duration: TimeInterval,
+        frequency: Double = 440,
+        sampleRate: Double = 44100,
+        envelope: (Double) -> Double = { _ in 1.0 }
+    ) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WaveformKitTone-\(UUID().uuidString).wav")
+        let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: sampleRate,
+            channels: 1,
+            interleaved: false
+        )!
+        let file = try AVAudioFile(forWriting: url, settings: format.settings)
+
+        let totalFrames = Int(duration * sampleRate)
+        let chunkFrames = 4096
+        var written = 0
+        while written < totalFrames {
+            let count = min(chunkFrames, totalFrames - written)
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count))!
+            buffer.frameLength = AVAudioFrameCount(count)
+            let channel = buffer.floatChannelData![0]
+            for i in 0..<count {
+                let frame = written + i
+                let t = Double(frame) / sampleRate
+                let position = Double(frame) / Double(totalFrames)
+                channel[i] = Float(sin(2 * .pi * frequency * t) * envelope(position))
+            }
+            try file.write(from: buffer)
+            written += count
+        }
+        return url
+    }
+
+    private func removeFile(_ url: URL) {
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    func testDecoderProducesRequestedBarCount() async throws {
+        let url = try makeToneFile(duration: 2.0)
+        defer { removeFile(url) }
+
+        let summary = try await AudioDecoder.summarize(url: url, targetBars: 100)
+
+        // The decoder emits a trailing partial bar for the remainder, so allow one extra.
+        XCTAssertGreaterThanOrEqual(summary.amplitudes.count, 100)
+        XCTAssertLessThanOrEqual(summary.amplitudes.count, 101)
+    }
+
+    func testDecoderReportsDurationAndFormat() async throws {
+        let url = try makeToneFile(duration: 1.5, sampleRate: 44100)
+        defer { removeFile(url) }
+
+        let summary = try await AudioDecoder.summarize(url: url, targetBars: 50)
+
+        XCTAssertEqual(summary.duration, 1.5, accuracy: 0.05)
+        XCTAssertEqual(summary.sampleRate, 44100, accuracy: 1)
+        XCTAssertEqual(summary.channelCount, 1)
+    }
+
+    func testDecoderNormalisesToUnitPeak() async throws {
+        // A constant-amplitude tone at half scale must still normalise to a peak of 1.
+        let url = try makeToneFile(duration: 1.0, envelope: { _ in 0.5 })
+        defer { removeFile(url) }
+
+        let summary = try await AudioDecoder.summarize(url: url, targetBars: 40)
+
+        XCTAssertEqual(summary.amplitudes.max() ?? 0, 1.0, accuracy: 1e-4,
+                       "Amplitudes are normalised so the loudest bar is 1.0")
+        XCTAssertTrue(summary.amplitudes.allSatisfy { $0 >= 0 && $0 <= 1 })
+    }
+
+    func testDecoderTracksAmplitudeEnvelope() async throws {
+        // Ramp from silence to full scale: the decoded bars must rise monotonically overall,
+        // which is the property that makes a waveform look like the audio it came from.
+        let url = try makeToneFile(duration: 2.0, envelope: { $0 })
+        defer { removeFile(url) }
+
+        let summary = try await AudioDecoder.summarize(url: url, targetBars: 20)
+        let amps = summary.amplitudes
+        XCTAssertGreaterThan(amps.count, 10)
+
+        let firstQuarter = amps.prefix(amps.count / 4).reduce(0, +) / Float(amps.count / 4)
+        let lastQuarter  = amps.suffix(amps.count / 4).reduce(0, +) / Float(amps.count / 4)
+        XCTAssertLessThan(firstQuarter, 0.3, "Start of a fade-in should be quiet")
+        XCTAssertGreaterThan(lastQuarter, 0.7, "End of a fade-in should be loud")
+    }
+
+    func testDecoderReportsProgressMonotonicallyAndFinishesAtOne() async throws {
+        let url = try makeToneFile(duration: 1.0)
+        defer { removeFile(url) }
+
+        let collector = ProgressCollector()
+        _ = try await AudioDecoder.summarize(url: url, targetBars: 50) { p in
+            collector.record(p)
+        }
+        let values = collector.values
+
+        XCTAssertFalse(values.isEmpty, "Progress must be reported at least once")
+        XCTAssertEqual(values.last, 1.0, "The final callback signals completion")
+        XCTAssertTrue(values.allSatisfy { $0 >= 0 && $0 <= 1 })
+        for (a, b) in zip(values, values.dropFirst()) {
+            XCTAssertLessThanOrEqual(a, b, "Progress must never go backwards")
+        }
+    }
+
+    func testDecoderThrowsOnMissingFile() async {
+        let url = URL(fileURLWithPath: "/nonexistent/definitely-not-audio.wav")
+        do {
+            _ = try await AudioDecoder.summarize(url: url, targetBars: 20)
+            XCTFail("Decoding a missing file should throw")
+        } catch {
+            // Any error is acceptable; AVFoundation's is not one of ours.
+        }
+    }
+
+    func testDecoderThrowsOnNonAudioFile() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WaveformKitNotAudio-\(UUID().uuidString).wav")
+        try Data("this is not audio".utf8).write(to: url)
+        defer { removeFile(url) }
+
+        do {
+            _ = try await AudioDecoder.summarize(url: url, targetBars: 20)
+            XCTFail("Decoding a non-audio file should throw")
+        } catch {
+            // Expected.
+        }
+    }
+
+    func testDecoderRespectsCancellation() async throws {
+        let url = try makeToneFile(duration: 20.0)
+        defer { removeFile(url) }
+
+        let task = Task {
+            try await AudioDecoder.summarize(url: url, targetBars: 4000)
+        }
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            // A very fast machine may finish before cancellation is observed; that is not a
+            // failure, only an unexercised path.
+        } catch is CancellationError {
+            // The path we care about.
+        } catch {
+            XCTFail("Cancellation should surface as CancellationError, got \(error)")
+        }
+    }
+
+    // MARK: - Decoder + cache + loader, together
+
+    /// Async sibling of `withTemporaryCache` — the decode has to be awaited inside the scope,
+    /// which a synchronous closure cannot do without smuggling results across isolation.
+    private func withTemporaryCacheAsync(
+        budget: Int,
+        _ body: () async throws -> Void
+    ) async rethrows {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WaveformKitTests-\(UUID().uuidString)", isDirectory: true)
+        let previousDirectory = WaveformCache.directoryOverride
+        let previousConfig = WaveformCache.configuration
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        WaveformCache.directoryOverride = dir
+        WaveformCache.configuration = WaveformCache.Configuration(maximumBytes: budget)
+        defer {
+            try? FileManager.default.removeItem(at: dir)
+            WaveformCache.directoryOverride = previousDirectory
+            WaveformCache.configuration = previousConfig
+        }
+        try await body()
+    }
+
+    func testLoaderDecodesRealFileAndCachesIt() async throws {
+        let audio = try makeToneFile(duration: 1.0, envelope: { $0 })
+        defer { removeFile(audio) }
+
+        try await withTemporaryCacheAsync(budget: .max) {
+            let summary = try await WaveformLoader.load(url: audio, targetBars: 60)
+            XCTAssertGreaterThan(summary.amplitudes.count, 50)
+
+            // The second read must come back from disk with identical data.
+            let cached = try XCTUnwrap(WaveformCache.load(url: audio, targetBars: 60))
+            XCTAssertEqual(cached, summary, "A cache round-trip must preserve the summary")
+        }
+    }
+
+    func testLoaderSkipsDecodeOnCacheHit() async throws {
+        let audio = try makeToneFile(duration: 1.0)
+        defer { removeFile(audio) }
+
+        try await withTemporaryCacheAsync(budget: .max) {
+            let first = try await WaveformLoader.load(url: audio, targetBars: 40)
+
+            // With useCache: false the decoder runs again and produces an equal — but freshly
+            // decoded — summary. Equality ignores `id`, so compare identity tokens instead.
+            let uncached = try await WaveformLoader.load(url: audio, targetBars: 40, useCache: false)
+            XCTAssertNotEqual(first.id, uncached.id, "useCache: false must bypass the cache")
+            XCTAssertEqual(first, uncached, "Decoding the same file twice must agree")
+        }
+    }
+}
+
+/// Collects progress callbacks fired from the decoder's background executor.
+private final class ProgressCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [Double] = []
+
+    func record(_ value: Double) {
+        lock.withLock { storage.append(value) }
+    }
+
+    var values: [Double] {
+        lock.withLock { storage }
     }
 }

@@ -100,7 +100,40 @@ in 0.5.0 with complete arithmetic but no gestures; it is now driven by touch.
   Xcode 15. The language *mode* is still selectable via `swiftLanguageModes`; the toolchain
   floor is not. Requirements are now Swift 6.0+ / Xcode 16+.
 
-**Tests: 119 total (+35 from 0.5.0)**
+**Documentation and platforms**
+
+- DocC catalog at `Sources/WaveformKit/WaveformKit.docc` — a curated landing page plus
+  `GettingStarted`, `ZoomAndPan`, and `RealtimeSafety` articles. Builds with zero DocC warnings.
+- `.spi.yml` so Swift Package Index hosts the documentation and shows a platform compatibility
+  matrix. Deliberately **no** `swift-docc-plugin` dependency: Swift Package Index builds DocC on
+  its own infrastructure, so the package keeps its zero-dependency promise.
+- visionOS 1.0 added to `Package.swift` platforms. The library type-checks clean against the
+  visionOS SDK under the Swift 6 language mode.
+- `AVAudioSession.CategoryOptions.allowBluetooth` was renamed to `.allowBluetoothHFP` in the
+  iOS 26 / visionOS 26 SDKs. Naming either spelling directly breaks a build against the other
+  SDK, so the option is now built from its raw value, which compiles warning-free against both.
+- CI gains an iOS/visionOS build matrix and a documentation job that fails on unresolved DocC
+  symbol links.
+
+**Tests**
+
+- `AudioDecoder` gains end-to-end coverage — it previously had none, despite being the path
+  every caller takes. Tests synthesize a WAV with `AVAudioFile` at test time rather than
+  committing a binary fixture, and cover bar count, duration and format reporting, peak
+  normalisation, envelope tracking, monotonic progress reporting, cancellation, and both failure
+  modes.
+- Added decoder/cache/loader integration tests covering a real decode, the disk round-trip, and
+  `useCache: false`.
+
+### Not done
+
+- **tvOS was evaluated and rejected for this release.** SwiftUI marks `DragGesture` unavailable
+  on tvOS, so seeking, panning, marker taps, and double-tap-to-reset cannot compile. A tvOS
+  type-check reports that as the *only* error — everything else in the package is tvOS-clean —
+  but the interaction path is not optional. Real support needs a focus-engine model and is now
+  tracked in Phase 5.
+
+**Tests: 129 total (+45 from 0.5.0)**
 
 
 ## [0.5.0] - 2026-05-19

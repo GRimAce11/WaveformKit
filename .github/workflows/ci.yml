@@ -46,9 +46,13 @@ jobs:
       - name: Build tests (warnings as errors)
         run: swift build --build-tests -Xswiftc -warnings-as-errors
 
-  ios-build:
-    name: Build for iOS Simulator
+  platforms:
+    name: Build for ${{ matrix.platform }}
     runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [iOS Simulator, visionOS Simulator]
     steps:
       - uses: actions/checkout@v4
 
@@ -58,11 +62,34 @@ jobs:
       - name: Resolve packages
         run: xcodebuild -resolvePackageDependencies -scheme WaveformKit
 
-      - name: Build for iOS Simulator
+      # This matters more than it looks: the audio-session code lives inside
+      # `#if os(iOS) || os(visionOS)`, so a macOS `swift build` never compiles it. Concurrency
+      # errors in that code are only visible here.
+      - name: Build for ${{ matrix.platform }}
         run: |
           xcodebuild \
             -scheme WaveformKit \
-            -destination 'generic/platform=iOS Simulator' \
+            -destination 'generic/platform=${{ matrix.platform }}' \
             -configuration Debug \
             build \
             CODE_SIGNING_ALLOWED=NO
+
+  docs:
+    name: Build documentation
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Catches broken DocC symbol links in the catalog before they reach the published docs
+      # on Swift Package Index.
+      - name: Build DocC archive
+        run: |
+          xcodebuild docbuild \
+            -scheme WaveformKit \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            | tee docbuild.log
+          if grep -q "warning:.*doesn't exist at" docbuild.log; then
+            echo "::error::DocC reported unresolved symbol links"
+            exit 1
+          fi

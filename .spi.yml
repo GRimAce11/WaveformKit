@@ -1,0 +1,8 @@
+# Swift Package Index build configuration.
+# Drives the documentation hosted at swiftpackageindex.com and the platform compatibility matrix.
+# Note: SPI builds DocC itself, so this needs no swift-docc-plugin dependency — which is how the
+# package keeps its zero-dependency promise.
+version: 1
+builder:
+  configs:
+    - documentation_targets: [WaveformKit]

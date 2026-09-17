@@ -89,6 +89,15 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
     @ObservationIgnored private var summaryPublishCounter: Int = 0
     @ObservationIgnored private let summaryPublishEveryNBins: Int
 
+    #if os(iOS) || os(tvOS) || os(visionOS)
+    /// `AVAudioSession.CategoryOptions.allowBluetooth` was renamed to `.allowBluetoothHFP` in
+    /// the iOS 26 / visionOS 26 SDKs — same option, same raw value, different spelling.  Naming
+    /// either one directly breaks a build against the other SDK (deprecation warning one way,
+    /// unknown member the other), and CI compiles with `-warnings-as-errors`.  Building it from
+    /// the raw value is the one spelling that works against both.
+    private static let allowBluetoothHFP = AVAudioSession.CategoryOptions(rawValue: 0x4)
+    #endif
+
     public init(
         bandCount: Int = 32,
         binsPerSecond: Double = 20,
@@ -143,7 +152,10 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
         #if os(iOS) || os(tvOS) || os(visionOS)
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .allowBluetooth])
+            try session.setCategory(
+                .playAndRecord, mode: .measurement,
+                options: [.defaultToSpeaker, Self.allowBluetoothHFP]
+            )
             try session.setActive(true)
         } catch {
             let mapped = MicrophoneRecorderError.audioSessionFailed(underlying: error as NSError)
