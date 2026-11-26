@@ -50,6 +50,10 @@ struct BarsView: View {
 
 /// Hosts a `WaveformMetalView` in SwiftUI.  Inputs flow in through `update`; the view redraws
 /// only when they change, never on a display-link loop.
+///
+/// `@MainActor` on the whole type, not just the representable conformance: the helpers below
+/// create and mutate the main-actor `WaveformMetalView`, and would otherwise be nonisolated.
+@MainActor
 struct MetalBarsView {
     let resources: MetalBarsResources
     let amplitudes: [Float]
