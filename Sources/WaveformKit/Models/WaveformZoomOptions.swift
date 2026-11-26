@@ -112,10 +112,17 @@ public struct WaveformZoomOptions: Sendable, Equatable {
     }
 
     /// Seconds to pan for a horizontal drag of `deltaPoints`, given the currently visible span
-    /// and the view's width.  Negated so that dragging right reveals earlier audio, matching
-    /// the direction of every scrollable surface on the platform.
-    public static func panSeconds(deltaPoints: CGFloat, visibleSpan: TimeInterval, width: CGFloat) -> TimeInterval {
+    /// and the view's width.  The audio follows the finger, like every scrollable surface on the
+    /// platform: dragging right reveals earlier audio when time runs left to right, and later
+    /// audio when it runs right to left.
+    public static func panSeconds(
+        deltaPoints: CGFloat,
+        visibleSpan: TimeInterval,
+        width: CGFloat,
+        rightToLeft: Bool = false
+    ) -> TimeInterval {
         guard width > 0, visibleSpan > 0 else { return 0 }
-        return -TimeInterval(deltaPoints) * (visibleSpan / TimeInterval(width))
+        let seconds = TimeInterval(deltaPoints) * (visibleSpan / TimeInterval(width))
+        return rightToLeft ? seconds : -seconds
     }
 }

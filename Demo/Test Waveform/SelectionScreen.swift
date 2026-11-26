@@ -12,6 +12,9 @@ struct SelectionScreen: View {
     @State private var usesDragActivation = true
     @State private var snapsToHalfSeconds = false
     @State private var updatesWhileDragging = true
+    /// Lays the waveform out right to left, as an Arabic or Hebrew UI would, without changing
+    /// the device language.
+    @State private var rightToLeft = false
     /// Counts binding writes, to show what `updatesWhileDragging` changes.
     @State private var selectionWrites = 0
 
@@ -46,6 +49,7 @@ struct SelectionScreen: View {
                 )
                 .frame(height: 110)
                 .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
+                .environment(\.layoutDirection, rightToLeft ? .rightToLeft : .leftToRight)
 
                 controls
                 actions
@@ -69,6 +73,7 @@ struct SelectionScreen: View {
             Toggle("Drag to select (editor)", isOn: $usesDragActivation)
             Toggle("Snap to 0.5 s", isOn: $snapsToHalfSeconds)
             Toggle("Update while dragging", isOn: $updatesWhileDragging)
+            Toggle("Right-to-left layout", isOn: $rightToLeft)
         }
         .font(.callout)
     }

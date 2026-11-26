@@ -38,6 +38,11 @@ public struct WaveformView: View {
     /// Lives in @State so SwiftUI preserves the same instance across re-renders.
     @State private var resampleCache = ResampleCache()
 
+    /// The app's layout direction, read before the view forces left-to-right on its own
+    /// content.  Combined with `timelineDirection` to decide which way time runs.
+    @Environment(\.layoutDirection) private var layoutDirection
+    @Environment(\.waveformTimelineDirection) private var timelineDirection
+
     public init(
         summary: WaveformSummary,
         currentTime: TimeInterval,
@@ -76,6 +81,18 @@ public struct WaveformView: View {
         GeometryReader { geo in
             content(width: geo.size.width, height: geo.size.height)
         }
+        // Everything inside works in physical, left-to-right coordinates, and right-to-left
+        // time is handled explicitly — by mirroring the renderers and through
+        // `WaveformTimeline`.  Forcing it here means nothing is flipped twice, whatever SwiftUI
+        // would otherwise do with `Canvas`, `.position`, or gesture anchors in an RTL layout.
+        .environment(\.layoutDirection, .leftToRight)
+    }
+
+    /// Time runs right to left: the timeline direction resolved against the app's layout
+    /// direction.  Never for `.circular`, which stays clockwise like a clock face.
+    private var runsRightToLeft: Bool {
+        if case .circular = style { return false }
+        return timelineDirection.isRightToLeft(in: layoutDirection)
     }
 
     @ViewBuilder
@@ -86,9 +103,13 @@ public struct WaveformView: View {
                 TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: false)) { timeline in
                     let phase = Self.idleProgress(at: timeline.date.timeIntervalSinceReferenceDate, cycle: 2.5)
                     renderer(progressOverride: phase, forceShowsProgress: true)
+                        .scaleEffect(x: runsRightToLeft ? -1 : 1, y: 1)
                 }
             } else {
+                // Mirroring the finished drawing flips every bar style — Canvas or Metal, built-in
+                // or custom — along with its played colouring and gradients, in one place.
                 renderer(progressOverride: nil, forceShowsProgress: false)
+                    .scaleEffect(x: runsRightToLeft ? -1 : 1, y: 1)
                     .animation(.linear(duration: 0.05), value: currentTime)
             }
             if let range = displayedSelection {
@@ -103,6 +124,7 @@ public struct WaveformView: View {
                     markers: markers,
                     duration: summary.duration,
                     visibleRange: timeline(width: width).visibleRange,
+                    rightToLeft: runsRightToLeft,
                     style: style
                 )
             }
@@ -123,7 +145,8 @@ public struct WaveformView: View {
         .modifier(WaveformMagnifyModifier(
             viewport: viewportBinding,
             options: zoomOptions,
-            isEnabled: zoomEnabled
+            isEnabled: zoomEnabled,
+            rightToLeft: runsRightToLeft
         ))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabelText)
@@ -169,6 +192,7 @@ public struct WaveformView: View {
                         .position(x: min(geo.size.width, max(0, line.x(for: time))), y: geo.size.height / 2)
                         .accessibilityElement()
                         .accessibilityLabel(edge == .start ? "Selection start" : "Selection end")
+                        .accessibilitySortPriority(edge == .start ? 1 : 0)
                         .accessibilityValue(Self.formatTime(time))
                         .accessibilityAdjustableAction { direction in
                             let step = selectionOptions.accessibilityStep(duration: summary.duration)
@@ -221,6 +245,9 @@ public struct WaveformView: View {
                         .position(position)
                         .accessibilityElement()
                         .accessibilityLabel(Self.markerAccessibilityLabel(for: marker))
+                        // Chronological order whichever way time runs on screen: higher
+                        // priority is read first, so earlier markers get the larger value.
+                        .accessibilitySortPriority(-marker.time)
                         .accessibilityAddTraits(onMarkerTap != nil ? .isButton : [])
                         .accessibilityAction {
                             onMarkerTap?(marker)
@@ -317,7 +344,8 @@ public struct WaveformView: View {
         resampleMode: WaveformResampleMode = .peak,
         colors: WaveformColors = WaveformColors(),
         markers: [WaveformMarker] = [],
-        scale: CGFloat = 2
+        scale: CGFloat = 2,
+        layoutDirection: LayoutDirection = .leftToRight
     ) -> CGImage? {
         let view = WaveformView(
             summary: summary,
@@ -334,6 +362,8 @@ public struct WaveformView: View {
         // `ImageRenderer` cannot capture a UIKit/AppKit-backed view, so a snapshot always uses
         // Canvas whatever backend the app has chosen.
         .waveformRenderingBackend(.canvas)
+        // A snapshot has no app environment to inherit, so the direction is a parameter.
+        .environment(\.layoutDirection, layoutDirection)
         let renderer = ImageRenderer(content: view)
         renderer.scale = scale
         return renderer.cgImage
@@ -513,7 +543,8 @@ public struct WaveformView: View {
                             in: size,
                             duration: summary.duration,
                             style: style,
-                            visibleRange: timeline(width: size.width).visibleRange
+                            visibleRange: timeline(width: size.width).visibleRange,
+                            rightToLeft: runsRightToLeft
                         )
                     }
                 }
@@ -621,7 +652,8 @@ public struct WaveformView: View {
 
     private func timeline(width: CGFloat) -> WaveformTimeline {
         WaveformTimeline(
-            duration: summary.duration, viewport: viewportBinding?.wrappedValue, width: width
+            duration: summary.duration, viewport: viewportBinding?.wrappedValue, width: width,
+            rightToLeft: runsRightToLeft
         )
     }
 
@@ -657,19 +689,24 @@ public struct WaveformView: View {
         var vp = binding.wrappedValue
         let span = vp.visibleRange.upperBound - vp.visibleRange.lowerBound
         vp.pan(by: WaveformZoomOptions.panSeconds(
-            deltaPoints: delta, visibleSpan: span, width: size.width
+            deltaPoints: delta, visibleSpan: span, width: size.width, rightToLeft: runsRightToLeft
         ))
         binding.wrappedValue = vp
     }
 
     /// Map a touch location to a time and report it through `onSeek`, respecting any viewport.
     private func applySeek(at location: CGPoint, size: CGSize) {
-        let p = Self.seekProgress(for: location, in: size, style: style)
         let seekTime: TimeInterval
-        if let vp = viewportBinding?.wrappedValue, vp.isZoomed {
-            seekTime = vp.time(forVisibleProgress: p)
+        if case .circular = style {
+            let p = Self.seekProgress(for: location, in: size, style: style)
+            if let vp = viewportBinding?.wrappedValue, vp.isZoomed {
+                seekTime = vp.time(forVisibleProgress: p)
+            } else {
+                seekTime = p * summary.duration
+            }
         } else {
-            seekTime = p * summary.duration
+            // The timeline already accounts for the viewport and for right-to-left time.
+            seekTime = timeline(width: size.width).time(forX: location.x)
         }
         onSeek?(seekTime)
     }
@@ -720,6 +757,7 @@ public struct WaveformView: View {
         duration: TimeInterval,
         style: WaveformStyle,
         visibleRange: ClosedRange<TimeInterval>? = nil,
+        rightToLeft: Bool = false,
         hitRadius: CGFloat = 14
     ) -> WaveformMarker? {
         guard duration > 0, size.width > 0, !markers.isEmpty else { return nil }
@@ -727,7 +765,9 @@ public struct WaveformView: View {
             return hitTestCircular(markers, at: location, in: size, duration: duration, hitRadius: hitRadius)
         }
         // Map through the visible range so a zoomed view hit-tests where the markers are drawn.
-        let timeline = WaveformTimeline(visibleRange: visibleRange ?? 0...duration, width: size.width)
+        let timeline = WaveformTimeline(
+            visibleRange: visibleRange ?? 0...duration, width: size.width, rightToLeft: rightToLeft
+        )
         var best: WaveformMarker?
         var bestDistance: CGFloat = .infinity
         for m in markers {
@@ -735,10 +775,13 @@ public struct WaveformView: View {
             let dx: CGFloat
             if m.isRegion {
                 let endX = timeline.x(for: m.time + m.duration)
-                if location.x >= startX, location.x <= endX {
+                // The start is the right edge when time runs right to left.
+                let left = min(startX, endX)
+                let right = max(startX, endX)
+                if location.x >= left, location.x <= right {
                     dx = 0
                 } else {
-                    dx = min(abs(location.x - startX), abs(location.x - endX))
+                    dx = min(abs(location.x - left), abs(location.x - right))
                 }
             } else {
                 dx = abs(location.x - startX)
@@ -909,6 +952,8 @@ private struct WaveformMagnifyModifier: ViewModifier {
     let viewport: Binding<WaveformViewport>?
     let options: WaveformZoomOptions
     let isEnabled: Bool
+    /// Time runs right to left, so the anchor's position is measured from the right edge.
+    let rightToLeft: Bool
 
     /// Zoom factor when the current pinch began.  `nil` between gestures.
     @State private var baseZoomFactor: Double?
@@ -935,9 +980,10 @@ private struct WaveformMagnifyModifier: ViewModifier {
                 )
                 var vp = viewport.wrappedValue
                 // `startAnchor` keeps the audio under the pinch centroid pinned in place.
+                let x = Double(value.startAnchor.x)
                 vp.zoom(
                     to: target,
-                    anchor: Double(value.startAnchor.x),
+                    anchor: rightToLeft ? 1 - x : x,
                     minSpan: options.minVisibleDuration
                 )
                 viewport.wrappedValue = vp

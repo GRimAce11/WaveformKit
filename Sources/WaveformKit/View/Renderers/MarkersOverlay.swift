@@ -14,6 +14,8 @@ struct MarkersOverlay: View {
     /// zoomed, `0...duration` otherwise.  Ignored by `.circular`, which always shows the whole
     /// file.
     let visibleRange: ClosedRange<TimeInterval>
+    /// Time runs right to left.  Linear styles only; labels move but are not mirrored.
+    let rightToLeft: Bool
     let style: WaveformStyle
 
     var body: some View {
@@ -31,7 +33,7 @@ struct MarkersOverlay: View {
     // MARK: - Linear
 
     private func drawLinear(context: GraphicsContext, size: CGSize) {
-        let timeline = WaveformTimeline(visibleRange: visibleRange, width: size.width)
+        let timeline = WaveformTimeline(visibleRange: visibleRange, width: size.width, rightToLeft: rightToLeft)
         guard timeline.pointsPerSecond > 0 else { return }
         let dotSize: CGFloat = 8
         let topPad: CGFloat = dotSize + 2
@@ -39,19 +41,22 @@ struct MarkersOverlay: View {
         for m in markers {
             let rawStart = timeline.x(for: m.time)
             let rawEnd = timeline.x(for: m.time + m.duration)
+            let left = min(rawStart, rawEnd)
+            let right = max(rawStart, rawEnd)
             // While zoomed, skip markers outside the visible window instead of clamping them,
             // which would pile every off-screen marker up against the edges.
-            guard rawEnd >= 0, rawStart <= size.width else { continue }
+            guard right >= 0, left <= size.width else { continue }
             let startX = clamp(rawStart, 0, size.width)
 
             if m.isRegion {
-                let endX = clamp(rawEnd, 0, size.width)
-                let bandWidth = max(1, endX - startX)
-                let band = CGRect(x: startX, y: 0, width: bandWidth, height: size.height)
+                let leftX = clamp(left, 0, size.width)
+                let rightX = clamp(right, 0, size.width)
+                let band = CGRect(x: leftX, y: 0, width: max(1, rightX - leftX), height: size.height)
                 context.fill(Path(band), with: .color(m.color.opacity(0.22)))
 
-                // The start stripe marks where the region begins; skip it when that is off screen.
-                if rawStart >= 0 {
+                // The start stripe marks where the region begins — its right edge when time runs
+                // right to left.  Skip it when that is off screen.
+                if rawStart >= 0, rawStart <= size.width {
                     var edge = Path()
                     edge.move(to: CGPoint(x: startX, y: 0))
                     edge.addLine(to: CGPoint(x: startX, y: size.height))
@@ -68,17 +73,21 @@ struct MarkersOverlay: View {
             }
 
             if let label = m.label {
+                // Labels move with the timeline but are never mirrored: text stays readable.
                 let text = Text(label).font(.system(size: 10, weight: .medium))
                 let resolved = context.resolve(text)
                 let labelX: CGFloat
                 let anchor: UnitPoint
                 if m.isRegion {
-                    let endX = clamp(rawEnd, 0, size.width)
-                    labelX = (startX + endX) / 2
+                    labelX = (clamp(left, 0, size.width) + clamp(right, 0, size.width)) / 2
                     anchor = .top
+                } else if rightToLeft {
+                    // Point-marker labels sit on the side time flows towards.
+                    labelX = startX - dotSize
+                    anchor = UnitPoint(x: 1, y: 0)
                 } else {
                     labelX = startX + dotSize
-                    anchor = .topLeading
+                    anchor = UnitPoint(x: 0, y: 0)
                 }
                 context.draw(resolved, at: CGPoint(x: labelX, y: 0), anchor: anchor)
             }

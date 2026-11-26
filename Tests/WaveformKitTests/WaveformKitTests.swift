@@ -2004,3 +2004,84 @@ extension WaveformKitTests {
         XCTAssertEqual(hit?.id, m.id)
     }
 }
+
+// MARK: - Right-to-left timelines (Phase 5)
+
+extension WaveformKitTests {
+
+    func testTimelineDirectionResolution() {
+        XCTAssertTrue(WaveformTimelineDirection.automatic.isRightToLeft(in: .rightToLeft))
+        XCTAssertFalse(WaveformTimelineDirection.automatic.isRightToLeft(in: .leftToRight))
+        XCTAssertFalse(WaveformTimelineDirection.leftToRight.isRightToLeft(in: .rightToLeft),
+                       "An explicit direction overrides the layout")
+        XCTAssertTrue(WaveformTimelineDirection.rightToLeft.isRightToLeft(in: .leftToRight))
+    }
+
+    func testTimelineDirectionDefaultsToAutomatic() {
+        XCTAssertEqual(EnvironmentValues().waveformTimelineDirection, .automatic,
+                       "Follows the layout direction unless the app says otherwise (HIG: flip progress controls)")
+    }
+
+    func testRightToLeftTimelineMirrorsPositions() {
+        let t = WaveformTimeline(duration: 60, viewport: nil, width: 600, rightToLeft: true)
+        XCTAssertEqual(t.x(for: 0), 600, accuracy: 1e-9, "Time starts at the right edge")
+        XCTAssertEqual(t.x(for: 60), 0, accuracy: 1e-9)
+        XCTAssertEqual(t.x(for: 15), 450, accuracy: 1e-9)
+        XCTAssertEqual(t.time(forX: 450), 15, accuracy: 1e-9)
+        XCTAssertEqual(t.progress(forX: 600), 0, accuracy: 1e-9)
+        XCTAssertEqual(t.progress(forX: -50), 1, accuracy: 1e-9, "Clamped past the trailing edge")
+    }
+
+    func testRightToLeftTimelineWhileZoomed() {
+        var vp = WaveformViewport(duration: 60)
+        vp.visibleRange = 20...30
+        let t = WaveformTimeline(duration: 60, viewport: vp, width: 200, rightToLeft: true)
+        XCTAssertEqual(t.x(for: 20), 200, accuracy: 1e-9)
+        XCTAssertEqual(t.x(for: 22.5), 150, accuracy: 1e-9)
+        XCTAssertEqual(t.time(forX: 0), 30, accuracy: 1e-9)
+        XCTAssertGreaterThan(t.x(for: 10), 200, "Earlier times land off the right edge")
+    }
+
+    func testTimelineRoundTripsInBothDirections() {
+        for rtl in [false, true] {
+            let t = WaveformTimeline(duration: 90, viewport: nil, width: 375, rightToLeft: rtl)
+            for time in stride(from: 0.0, through: 90, by: 7.5) {
+                XCTAssertEqual(t.time(forX: t.x(for: time)), time, accuracy: 1e-9)
+            }
+        }
+    }
+
+    func testSelectionEdgesSwapSidesWhenRightToLeft() {
+        let t = WaveformTimeline(duration: 60, viewport: nil, width: 600, rightToLeft: true)
+        let sel: ClosedRange<TimeInterval> = 10...30        // start at x = 500, end at x = 300
+        XCTAssertEqual(SelectionEdge.hitTest(x: 500, selection: sel, timeline: t), .start)
+        XCTAssertEqual(SelectionEdge.hitTest(x: 300, selection: sel, timeline: t), .end)
+    }
+
+    func testMarkerHitTestRightToLeft() {
+        let size = CGSize(width: 600, height: 60)
+        let point = WaveformMarker(time: 15, color: .red)          // x = 450 when RTL
+        XCTAssertEqual(WaveformView.hitTestMarker(
+            [point], at: CGPoint(x: 450, y: 30), in: size, duration: 60, style: .bars(),
+            rightToLeft: true
+        )?.id, point.id)
+        XCTAssertNil(WaveformView.hitTestMarker(
+            [point], at: CGPoint(x: 150, y: 30), in: size, duration: 60, style: .bars(),
+            rightToLeft: true
+        ), "The left-to-right position must not hit")
+
+        let region = WaveformMarker(time: 10, duration: 20, color: .blue)   // x = 300...500
+        XCTAssertEqual(WaveformView.hitTestMarker(
+            [region], at: CGPoint(x: 400, y: 30), in: size, duration: 60, style: .bars(),
+            rightToLeft: true
+        )?.id, region.id, "Inside a region whose start is its right edge")
+    }
+
+    func testPanFollowsTheFingerInBothDirections() {
+        // 300 pt showing 30 s: 10 pt per second.  Dragging right by 50 pt…
+        let ltr = WaveformZoomOptions.panSeconds(deltaPoints: 50, visibleSpan: 30, width: 300)
+        let rtl = WaveformZoomOptions.panSeconds(deltaPoints: 50, visibleSpan: 30, width: 300, rightToLeft: true)
+        XCTAssertEqual(ltr, -5, accuracy: 1e-9, "…reveals earlier audio when time runs left to right")
+        XCTAssertEqual(rtl, 5, accuracy: 1e-9, "…and later audio when it runs right to left")
+    }
+}

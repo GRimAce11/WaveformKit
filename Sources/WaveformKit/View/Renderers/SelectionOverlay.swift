@@ -18,12 +18,15 @@ struct SelectionOverlay: View {
             guard size.width > 0, size.height > 0, timeline.pointsPerSecond > 0 else { return }
             let rawStart = timeline.x(for: selection.lowerBound)
             let rawEnd = timeline.x(for: selection.upperBound)
+            // Left and right edges on screen; the start is on the right when time runs RTL.
+            let left = min(rawStart, rawEnd)
+            let right = max(rawStart, rawEnd)
             // Entirely off screen while zoomed elsewhere: nothing to draw.
-            guard rawEnd >= 0, rawStart <= size.width else { return }
+            guard right >= 0, left <= size.width else { return }
 
-            let startX = min(size.width, max(0, rawStart))
-            let endX = min(size.width, max(0, rawEnd))
-            let band = CGRect(x: startX, y: 0, width: max(1, endX - startX), height: size.height)
+            let leftX = min(size.width, max(0, left))
+            let rightX = min(size.width, max(0, right))
+            let band = CGRect(x: leftX, y: 0, width: max(1, rightX - leftX), height: size.height)
             context.fill(Path(band), with: .color(tint.opacity(0.18)))
 
             // Only draw an edge that is actually on screen; a clipped edge has no handle to grab.

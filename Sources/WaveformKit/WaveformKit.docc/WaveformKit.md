@@ -46,11 +46,13 @@ WaveformView(loader: loader, currentTime: player.currentTime, onSeek: { player.s
 - ``WaveformResampleMode``
 - ``WaveformRenderer``
 - ``WaveformRenderingBackend``
+- ``WaveformTimelineDirection``
 
 ### Zoom and Pan
 
 - <doc:ZoomAndPan>
 - <doc:RegionSelection>
+- <doc:RightToLeft>
 - ``WaveformViewport``
 - ``WaveformZoomOptions``
 - ``WaveformSummaryPyramid``

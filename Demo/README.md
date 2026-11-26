@@ -12,7 +12,7 @@ An Xcode project that demonstrates every major WaveformKit capability in a singl
 | **Microphone** | Live FFT, recording, interruption handling, playback of captured file |
 | **Custom Renderer** | Three `WaveformRenderer` implementations: oscilloscope, mirror fill, level meter |
 | **Viewport** | Pinch / pan / double-tap gestures plus the programmatic `WaveformViewport` API |
-| **Selection** | Region selection: both activation modes, edge dragging, snapping, zoom to selection |
+| **Selection** | Region selection: both activation modes, edge dragging, snapping, zoom to selection, right-to-left layout toggle |
 
 ## Requirements
 

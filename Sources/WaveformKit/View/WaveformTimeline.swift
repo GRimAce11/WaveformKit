@@ -6,25 +6,32 @@ import Foundation
 /// One mapping shared by everything that places or hit-tests things in time — markers, the
 /// selection, seeking — so that when zoomed they all agree with the bars, which are drawn from
 /// the viewport's visible range.
+///
+/// When `rightToLeft` is set, time runs from the trailing (right) edge to the leading (left)
+/// one, so `x(for:)` and `time(forX:)` mirror.  Coordinates are always physical — the view
+/// forces a left-to-right layout internally — so this is the only place the flip happens.
 struct WaveformTimeline: Equatable {
     /// The time span the view's width represents.
     let visibleRange: ClosedRange<TimeInterval>
     let width: CGFloat
+    let rightToLeft: Bool
 
     /// The full duration when there is no viewport or it is not zoomed, the visible range
     /// otherwise — the same rule the bars use.
-    init(duration: TimeInterval, viewport: WaveformViewport?, width: CGFloat) {
+    init(duration: TimeInterval, viewport: WaveformViewport?, width: CGFloat, rightToLeft: Bool = false) {
         if let viewport, viewport.isZoomed {
             visibleRange = viewport.visibleRange
         } else {
             visibleRange = 0...max(0, duration)
         }
         self.width = width
+        self.rightToLeft = rightToLeft
     }
 
-    init(visibleRange: ClosedRange<TimeInterval>, width: CGFloat) {
+    init(visibleRange: ClosedRange<TimeInterval>, width: CGFloat, rightToLeft: Bool = false) {
         self.visibleRange = visibleRange
         self.width = width
+        self.rightToLeft = rightToLeft
     }
 
     private var span: TimeInterval { visibleRange.upperBound - visibleRange.lowerBound }
@@ -37,14 +44,21 @@ struct WaveformTimeline: Equatable {
     /// Horizontal position of `time`.  Not clamped: times outside the visible range land
     /// outside `0...width`, which callers clip or skip.
     func x(for time: TimeInterval) -> CGFloat {
-        CGFloat(time - visibleRange.lowerBound) * pointsPerSecond
+        let fromStart = CGFloat(time - visibleRange.lowerBound) * pointsPerSecond
+        return rightToLeft ? width - fromStart : fromStart
     }
 
     /// Time at horizontal position `x`, clamped to the visible range.
     func time(forX x: CGFloat) -> TimeInterval {
         guard width > 0 else { return visibleRange.lowerBound }
+        return visibleRange.lowerBound + progress(forX: x) * span
+    }
+
+    /// Position `x` as a fraction of the way through the visible range, in `0...1`.
+    func progress(forX x: CGFloat) -> Double {
+        guard width > 0 else { return 0 }
         let p = min(1, max(0, Double(x / width)))
-        return visibleRange.lowerBound + p * span
+        return rightToLeft ? 1 - p : p
     }
 }
 

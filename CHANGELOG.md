@@ -44,6 +44,15 @@ at 1× shift slightly for decoded files, and existing disk-cache entries are re-
   VoiceOver gets *Select from playhead* / *Clear selection* actions and adjustable
   start and end elements. Works zoomed; ignored by `.circular`.
 
+- **Right-to-left timelines** (Phase 5). `WaveformTimelineDirection` (`.automatic`,
+  `.leftToRight`, `.rightToLeft`), the `waveformTimelineDirection(_:)` modifier, and
+  `EnvironmentValues.waveformTimelineDirection`. Bars, played colouring, seeking, panning, pinch
+  anchoring, markers, selection, and VoiceOver element positions all follow it. Marker labels move
+  but are not mirrored; VoiceOver reads markers and selection edges in time order. `.circular`
+  stays clockwise.
+- `WaveformView.snapshot(... layoutDirection:)`, since a snapshot has no environment to read.
+- `WaveformZoomOptions.panSeconds(deltaPoints:visibleSpan:width:rightToLeft:)`.
+
 ### Fixed
 
 - Markers ignored the viewport. While zoomed, they were drawn — and hit-tested, and placed for
@@ -52,6 +61,11 @@ at 1× shift slightly for decoded files, and existing disk-cache entries are re-
 
 ### Changed
 
+- **In right-to-left layouts, time now runs right to left by default**, following Apple's HIG
+  guidance to flip progress controls. Previously the waveform was laid out left to right in every
+  language. Apply `.waveformTimelineDirection(.leftToRight)` to keep the old behaviour.
+- `WaveformView` forces a left-to-right layout on its own content and applies right-to-left time
+  explicitly, so nothing inside is flipped twice.
 - `WaveformView.snapshot` always renders with `Canvas`, whatever backend the environment sets.
 - `WaveformView` draws from `summary.pyramid` whenever the summary has one, at every zoom level,
   picking the coarsest level with at least one bin per bar. Drawing from it at 1× too keeps bar

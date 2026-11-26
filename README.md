@@ -9,7 +9,7 @@ A SwiftUI waveform visualization framework for audio apps. Handles decoding, cac
 ![Swift](https://img.shields.io/badge/Swift-6.0+-orange?logo=swift)
 ![Platforms](https://img.shields.io/badge/Platforms-iOS%2017%20%7C%20macOS%2014%20%7C%20visionOS%201-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
-![Tests](https://img.shields.io/badge/Tests-164%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/Tests-178%20passing-brightgreen)
 
 ---
 
@@ -36,6 +36,7 @@ Key design decisions that differentiate it:
 - `WaveformRenderer` protocol for fully custom styles without forking
 - Pinch-to-zoom, drag-to-pan, and double-tap-to-reset via `WaveformViewport` — `ScrollView`-safe
 - Region selection with draggable edges, snapping, and VoiceOver editing, bound to a plain `ClosedRange`
+- Right-to-left support: in Arabic and Hebrew layouts time runs right to left, as Apple's HIG asks of progress controls
 - Multi-resolution summaries (`WaveformSummaryPyramid`), so zooming in reveals real detail
 - Opt-in Metal backend for timelines with thousands of bars
 - Seek gestures on all styles — linear drag on bar/line/dot styles, angular drag on circular
@@ -89,7 +90,7 @@ A runnable showcase app lives in [`Demo/`](Demo/). Open `Demo/Test Waveform.xcod
 | **Microphone** | Live FFT recording + interruption handling + captured-file playback |
 | **Custom Renderer** | Three `WaveformRenderer` implementations with annotated source |
 | **Viewport** | Pinch / pan / double-tap gestures, both `dragBehavior` modes, inside a `ScrollView` |
-| **Selection** | Create and adjust a region, both activation modes, snapping, zoom to selection |
+| **Selection** | Create and adjust a region, both activation modes, snapping, zoom to selection, right-to-left layout |
 
 The demo generates a test tone on-device at first launch — no bundled audio files, no network required.
 
@@ -529,6 +530,32 @@ zoomed. `.circular` ignores it.
 
 ---
 
+## Right-to-Left Languages
+
+Apple's Human Interface Guidelines ask apps to *"flip controls that show progress from one value
+to another"* in right-to-left languages, the way sliders and progress bars do. A waveform seek bar
+is one, so in an Arabic or Hebrew layout `WaveformView` runs time from the right edge to the left
+by default — no code needed.
+
+Everything that maps time to position flips together: the bars and their played colouring,
+seeking, drag-to-pan (the audio still follows your finger), the pinch anchor, markers, the
+selection, and the positions of VoiceOver elements. Marker labels move to the other side of their
+marker but are never mirrored, and VoiceOver still visits markers and selection edges in time
+order. Digits are never reversed.
+
+To pin the direction — a DAW-style editor that keeps time left to right in every language, say:
+
+```swift
+WaveformView(summary: summary, currentTime: t)
+    .waveformTimelineDirection(.leftToRight)   // .automatic (default) / .leftToRight / .rightToLeft
+```
+
+`.circular` always runs clockwise from the top: the guidelines treat clock faces as the same in
+every language. `WaveformView.snapshot` has no app environment to read, so pass
+`layoutDirection: .rightToLeft` when rendering one for an RTL UI.
+
+---
+
 ## Players
 
 ### AVAudioEnginePlayer — local files + FFT
@@ -827,6 +854,7 @@ WaveformColors(
 - **Long recordings** — `MicrophoneRecorder` halves the amplitude array when it exceeds `maxBins` (default 4000). Temporal resolution on the oldest portions degrades after each halving cycle.
 - **Zoom detail ends at the pyramid's base** — past roughly `pyramidResolution / barCount` × zoom (about 80× for 200 bars at the default), bars repeat base bins rather than revealing more. Raise `pyramidResolution` for long files you expect to zoom deeply. Summaries without a pyramid (`MicrophoneRecorder`, `demo(...)`, server JSON that omits it) still stretch their flat `amplitudes`.
 - **Metal covers bar styles only** — `.line`, `.dots`, `.circular`, `.dancingBars` and `.custom` always draw with `Canvas`, whatever `waveformRenderingBackend` says. Wide-gamut (Display P3) colours render at their nearest sRGB value on the Metal path.
+- **Custom renderers are mirrored as a whole in right-to-left layouts** — the finished drawing is flipped, so any text a `WaveformRenderer` draws would read backwards. Draw labels in an overlay instead, or pin `.waveformTimelineDirection(.leftToRight)`.
 - **Selection does not auto-scroll** — while zoomed, dragging an edge to the side of the view stops at the visible range instead of scrolling the timeline. Zoom out, or pan, to reach further. `.circular` has no selection.
 - **Circular style and zoom** — pinch on `.circular` anchors horizontally, which is geometrically arbitrary on a radial layout. Zoom on circular works but is not the intended pairing.
 
@@ -883,7 +911,8 @@ shipping behaviour, and brings the package to Swift 6.
 - ✅ Region selection gesture — `selection:` binding plus `WaveformSelectionOptions`, with
   draggable edges, snapping, and VoiceOver editing. Markers now also follow the viewport when
   zoomed, which they did not before
-- RTL layout support
+- ✅ RTL layout support — time runs right to left in RTL layouts (`.automatic`), overridable with
+  `.waveformTimelineDirection(_:)`; `.circular` stays clockwise
 - tvOS support — needs a focus-engine interaction model, since `DragGesture` and `MagnifyGesture`
   are both unavailable on the platform
 - Explicit watchOS target
