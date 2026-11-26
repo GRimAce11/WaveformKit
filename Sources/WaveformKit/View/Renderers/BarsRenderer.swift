@@ -15,19 +15,18 @@ struct BarsRenderer: View {
             let count = amplitudes.count
             guard count > 0, size.width > 0, size.height > 0 else { return }
 
-            let totalSpacing = spacing * CGFloat(max(0, count - 1))
-            let barWidth = max(1, (size.width - totalSpacing) / CGFloat(count))
+            let layout = BarLayout(count: count, width: size.width, spacing: spacing)
+            let barWidth = layout.barWidth
             let centerY = size.height / 2
             let progressX = size.width * CGFloat(progress)
-            let minBarHeight: CGFloat = 2
 
             let playedShading = shading(colors.played, gradient: colors.playedGradient, size: size)
             let unplayedShading = shading(colors.unplayed, gradient: colors.unplayedGradient, size: size)
 
             for i in 0..<count {
                 let amp = CGFloat(amplitudes[i]) * amplitudeScale
-                let x = CGFloat(i) * (barWidth + spacing)
-                let h = max(minBarHeight, min(size.height, amp * size.height))
+                let x = layout.x(at: i)
+                let h = BarLayout.barHeight(amplitude: amp, height: size.height)
                 let rect: CGRect
                 if mirrored {
                     rect = CGRect(x: x, y: centerY - h / 2, width: barWidth, height: h)

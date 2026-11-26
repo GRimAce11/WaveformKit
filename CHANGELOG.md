@@ -26,8 +26,17 @@ at 1× shift slightly for decoded files, and existing disk-cache entries are re-
   `remove`. Defaults to `WaveformSummaryPyramid.defaultResolution`; `0` skips the pyramid.
   The pyramid is computed in the same pass as the bars — no second read of the file.
 
+- **Metal rendering backend** for `.bars` and `.mirroredBars`, for timelines with thousands of
+  bars. `WaveformRenderingBackend` (`.canvas`, `.metal`, `.automatic(minimumBarCount:)`), the
+  `waveformRenderingBackend(_:)` view modifier, and `EnvironmentValues.waveformRenderingBackend`.
+  Defaults to `.canvas`, so nothing changes unless you opt in. One instanced draw call per view,
+  redrawn only when its inputs change; triple-buffered amplitude uploads. Falls back to `Canvas`
+  without a Metal device or while the shader compiles on first use. The shader is compiled at
+  runtime from source, so the package needs no Metal Toolchain to build.
+
 ### Changed
 
+- `WaveformView.snapshot` always renders with `Canvas`, whatever backend the environment sets.
 - `WaveformView` draws from `summary.pyramid` whenever the summary has one, at every zoom level,
   picking the coarsest level with at least one bin per bar. Drawing from it at 1× too keeps bar
   heights on one scale through a pinch. The trade-off: at 1× the bars now pool fine-grained bins

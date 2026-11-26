@@ -235,6 +235,9 @@ public struct WaveformView: View {
             markers: markers
         )
         .frame(width: size.width, height: size.height)
+        // `ImageRenderer` cannot capture a UIKit/AppKit-backed view, so a snapshot always uses
+        // Canvas whatever backend the app has chosen.
+        .waveformRenderingBackend(.canvas)
         let renderer = ImageRenderer(content: view)
         renderer.scale = scale
         return renderer.cgImage
@@ -263,7 +266,7 @@ public struct WaveformView: View {
         let activeShowsProgress = forceShowsProgress || movement.showsProgress
         switch style {
         case let .bars(count, spacing, cornerRadius):
-            BarsRenderer(
+            BarsView(
                 amplitudes: resampled(to: count),
                 progress: activeProgress,
                 amplitudeScale: amplitudeScale,
@@ -274,7 +277,7 @@ public struct WaveformView: View {
                 mirrored: false
             )
         case let .mirroredBars(count, spacing, cornerRadius):
-            BarsRenderer(
+            BarsView(
                 amplitudes: resampled(to: count),
                 progress: activeProgress,
                 amplitudeScale: amplitudeScale,

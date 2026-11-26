@@ -277,6 +277,37 @@ deliberately want an even, ambient level-meter look.
 
 ---
 
+## Metal Rendering
+
+`Canvas` fills one path per bar on the CPU, which is ideal for a 100-bar seek bar and starts to
+cost real frame time in the thousands — the range a zoomable editor timeline reaches once the
+pyramid gives it the detail. The Metal backend draws every bar in one instanced GPU draw call.
+It is opt-in, set once for a whole subtree:
+
+```swift
+WaveformView(summary: summary, currentTime: t, style: .bars(count: 2_000, spacing: 0))
+    .waveformRenderingBackend(.automatic())   // Metal at 512+ bars, Canvas below
+```
+
+| Backend | Draws `.bars` / `.mirroredBars` with |
+|---|---|
+| `.canvas` *(default)* | `Canvas`, as in every earlier release |
+| `.metal` | Metal at any bar count |
+| `.automatic(minimumBarCount: 512)` | Metal at or above the threshold, `Canvas` below |
+
+- Covers `.bars` and `.mirroredBars`, including solid colours, horizontal gradients, the
+  played/unplayed split, corner radius and reactive scaling. Other styles always use `Canvas`.
+- Falls back to `Canvas` by itself — no Metal device, or the first few milliseconds while the
+  shader compiles — so a view is never blank.
+- Needs nothing from your build: the shader is compiled at runtime by the OS, so the package
+  does not depend on Xcode's separately downloaded Metal Toolchain.
+- `WaveformView.snapshot` always renders with `Canvas`, since `ImageRenderer` cannot capture a
+  Metal-backed view.
+- Bars are at least 1 pt wide. At very large counts pass `spacing: 0`, or the row overflows the
+  trailing edge.
+
+---
+
 ## Custom Renderers
 
 Implement `WaveformRenderer` to draw anything without modifying the library.
@@ -737,6 +768,7 @@ WaveformColors(
 - **No tvOS** — SwiftUI marks `DragGesture` unavailable on tvOS, so seeking, panning, marker taps, and double-tap-to-reset cannot compile there. Everything else in the package is tvOS-clean; support needs a focus-engine interaction model, which is Phase 5.
 - **Long recordings** — `MicrophoneRecorder` halves the amplitude array when it exceeds `maxBins` (default 4000). Temporal resolution on the oldest portions degrades after each halving cycle.
 - **Zoom detail ends at the pyramid's base** — past roughly `pyramidResolution / barCount` × zoom (about 80× for 200 bars at the default), bars repeat base bins rather than revealing more. Raise `pyramidResolution` for long files you expect to zoom deeply. Summaries without a pyramid (`MicrophoneRecorder`, `demo(...)`, server JSON that omits it) still stretch their flat `amplitudes`.
+- **Metal covers bar styles only** — `.line`, `.dots`, `.circular`, `.dancingBars` and `.custom` always draw with `Canvas`, whatever `waveformRenderingBackend` says. Wide-gamut (Display P3) colours render at their nearest sRGB value on the Metal path.
 - **Circular style and zoom** — pinch on `.circular` anchors horizontally, which is geometrically arbitrary on a radial layout. Zoom on circular works but is not the intended pairing.
 
 ---
@@ -782,7 +814,9 @@ shipping behaviour, and brings the package to Swift 6.
 
 - ✅ `WaveformSummaryPyramid` — multi-resolution amplitude arrays for efficient high-zoom
   rendering, built by the decoder in the same pass and cached alongside the summary
-- Optional Metal-backed renderer path for spectrograms and large bar counts
+- ✅ Optional Metal-backed renderer path for large bar counts —
+  `.waveformRenderingBackend(.metal / .automatic())` for `.bars` and `.mirroredBars`
+- Metal spectrogram — needs a spectrogram data model (FFT history over time) first
 - ProMotion 120 Hz `TimelineView` for `.dancingBars`
 
 ### Phase 5 — Editor-Grade Tooling

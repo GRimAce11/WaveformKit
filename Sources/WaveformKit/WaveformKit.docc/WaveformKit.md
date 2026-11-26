@@ -45,6 +45,7 @@ WaveformView(loader: loader, currentTime: player.currentTime, onSeek: { player.s
 - ``WaveformColors``
 - ``WaveformResampleMode``
 - ``WaveformRenderer``
+- ``WaveformRenderingBackend``
 
 ### Zoom and Pan
 

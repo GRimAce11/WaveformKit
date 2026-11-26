@@ -1,6 +1,7 @@
 import XCTest
 import SwiftUI
 import AVFoundation
+import Metal
 @testable import WaveformKit
 
 final class WaveformKitTests: XCTestCase {
@@ -1725,5 +1726,142 @@ extension WaveformKitTests {
                          "A flat-only entry must not satisfy a request for a pyramid")
             XCTAssertEqual(WaveformCache.load(url: audio, targetBars: 64, pyramidResolution: 0), summary)
         }
+    }
+}
+
+// MARK: - Metal rendering backend (Phase 4)
+
+extension WaveformKitTests {
+
+    func testRenderingBackendSelection() {
+        XCTAssertFalse(WaveformRenderingBackend.canvas.prefersMetal(barCount: 10_000))
+        XCTAssertTrue(WaveformRenderingBackend.metal.prefersMetal(barCount: 1))
+        XCTAssertFalse(WaveformRenderingBackend.automatic().prefersMetal(barCount: 511))
+        XCTAssertTrue(WaveformRenderingBackend.automatic().prefersMetal(barCount: 512))
+        XCTAssertTrue(WaveformRenderingBackend.automatic(minimumBarCount: 100).prefersMetal(barCount: 100))
+    }
+
+    func testRenderingBackendDefaultsToCanvas() {
+        XCTAssertEqual(EnvironmentValues().waveformRenderingBackend, .canvas,
+                       "Metal is opt-in; existing apps must keep drawing exactly as before")
+    }
+
+    func testBarLayoutMatchesCanvasArithmetic() {
+        let layout = BarLayout(count: 100, width: 400, spacing: 2)
+        // (400 - 2 × 99) / 100
+        XCTAssertEqual(layout.barWidth, 2.02, accuracy: 1e-9)
+        XCTAssertEqual(layout.step, 4.02, accuracy: 1e-9)
+        XCTAssertEqual(layout.x(at: 10), 40.2, accuracy: 1e-9)
+    }
+
+    func testBarLayoutNeverGoesBelowOnePoint() {
+        let layout = BarLayout(count: 5_000, width: 400, spacing: 2)
+        XCTAssertEqual(layout.barWidth, 1, "Too many bars overflow and clip rather than vanish")
+        XCTAssertEqual(BarLayout(count: 0, width: 400, spacing: 2).barWidth, 400,
+                       "A zero count must not divide by zero")
+    }
+
+    func testBarHeightClamps() {
+        XCTAssertEqual(BarLayout.barHeight(amplitude: 0, height: 100), BarLayout.minimumBarHeight)
+        XCTAssertEqual(BarLayout.barHeight(amplitude: 0.5, height: 100), 50)
+        XCTAssertEqual(BarLayout.barHeight(amplitude: 3, height: 100), 100,
+                       "A reactive boost never pushes a bar past the view")
+    }
+
+    func testMetalStructsMatchShaderLayout() {
+        // The shader reads these as float4 fields; any padding would misalign every value.
+        XCTAssertEqual(MemoryLayout<MetalBarUniforms>.stride, 64)
+        XCTAssertEqual(MemoryLayout<MetalGradientStop>.stride, 32)
+    }
+
+    func testMetalUniformsPacking() {
+        let u = MetalBarUniforms(
+            size: CGSize(width: 400, height: 80), barCount: 100, spacing: 2, cornerRadius: 1.5,
+            amplitudeScale: 1.25, progress: 0.25, showsProgress: true, mirrored: true,
+            pointsPerPixel: 1.0 / 3, playedStopCount: 1, unplayedStopCount: 3
+        )
+        XCTAssertEqual(u.layout.x, 400)
+        XCTAssertEqual(u.layout.y, 80)
+        XCTAssertEqual(u.layout.z, 2.02, accuracy: 1e-5)
+        XCTAssertEqual(u.layout.w, 4.02, accuracy: 1e-5)
+        XCTAssertEqual(u.shape, SIMD4(1.5, Float(BarLayout.minimumBarHeight), 1.25, 100))
+        XCTAssertEqual(u.flags.x, 100)
+        XCTAssertEqual(u.flags.y, 1)
+        XCTAssertEqual(u.flags.z, 1)
+        XCTAssertEqual(u.flags.w, 1.0 / 3, accuracy: 1e-6)
+        XCTAssertEqual(u.stopCounts, SIMD4(1, 3, 0, 0))
+    }
+
+    func testMetalUniformsGuardAgainstBadInput() {
+        let u = MetalBarUniforms(
+            size: CGSize(width: 200, height: 40), barCount: 10, spacing: 0, cornerRadius: -4,
+            amplitudeScale: 1, progress: 7, showsProgress: false, mirrored: false,
+            pointsPerPixel: 0, playedStopCount: 1, unplayedStopCount: 1
+        )
+        XCTAssertEqual(u.shape.x, 0, "Negative corner radius is clamped")
+        XCTAssertEqual(u.shape.w, 200, "Progress past 1 pins the playhead to the trailing edge")
+        XCTAssertGreaterThan(u.flags.w, 0, "The shader divides by points-per-pixel")
+    }
+
+    func testMetalStopsForSolidColour() {
+        let stops = MetalGradientStop.stops(
+            color: Color(.sRGB, red: 1, green: 0.5, blue: 0, opacity: 0.8),
+            gradient: nil, in: EnvironmentValues()
+        )
+        XCTAssertEqual(stops.count, 1)
+        XCTAssertEqual(stops[0].color.x, 1, accuracy: 1e-3)
+        XCTAssertEqual(stops[0].color.y, 0.5, accuracy: 1e-2)
+        XCTAssertEqual(stops[0].color.z, 0, accuracy: 1e-3)
+        XCTAssertEqual(stops[0].color.w, 0.8, accuracy: 1e-3)
+    }
+
+    func testMetalStopsForGradientAreSortedAndCapped() {
+        let unsorted = Gradient(stops: [
+            .init(color: .white, location: 1),
+            .init(color: .black, location: 0),
+            .init(color: .gray, location: 0.5),
+        ])
+        let stops = MetalGradientStop.stops(color: .red, gradient: unsorted, in: EnvironmentValues())
+        XCTAssertEqual(stops.map(\.location.x), [0, 0.5, 1])
+
+        let long = Gradient(colors: Array(repeating: Color.blue, count: 40))
+        XCTAssertEqual(
+            MetalGradientStop.stops(color: .red, gradient: long, in: EnvironmentValues()).count,
+            MetalBarsShader.maximumStopsPerShading
+        )
+    }
+
+    func testMetalStopsClampWideGamutComponents() {
+        let stops = MetalGradientStop.stops(
+            color: Color(.sRGB, red: 1.6, green: -0.2, blue: 0.5, opacity: 1),
+            gradient: nil, in: EnvironmentValues()
+        )
+        XCTAssertEqual(stops[0].color.x, 1)
+        XCTAssertEqual(stops[0].color.y, 0)
+    }
+
+    func testMetalStopTableLayout() {
+        let a = MetalGradientStop(color: SIMD4(1, 0, 0, 1), location: 0)
+        let b = MetalGradientStop(color: SIMD4(0, 0, 1, 1), location: 0)
+        let table = MetalGradientStop.table(played: [a], unplayed: [b])
+        let n = MetalBarsShader.maximumStopsPerShading
+        XCTAssertEqual(table.count, n * 2)
+        XCTAssertEqual(table[0], a)
+        XCTAssertEqual(table[n], b, "Unplayed stops start at the offset the shader reads them from")
+        XCTAssertEqual(table[1], .clear)
+    }
+
+    func testShaderSourceUsesTheSwiftSideConstants() {
+        let source = MetalBarsShader.source
+        XCTAssertTrue(source.contains("vertex BarVertex \(MetalBarsShader.vertexFunctionName)("))
+        XCTAssertTrue(source.contains("fragment float4 \(MetalBarsShader.fragmentFunctionName)("))
+        XCTAssertTrue(source.contains("played ? 0 : \(MetalBarsShader.maximumStopsPerShading);"))
+    }
+
+    func testMetalShaderCompilesOnThisDevice() throws {
+        // The shader is a string compiled at runtime, so a Swift build cannot catch a typo in
+        // it.  This does.  Skipped on machines with no Metal device.
+        try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "No Metal device")
+        XCTAssertNotNil(MetalBarsResources.make(), "Shader compilation or pipeline creation failed")
     }
 }
