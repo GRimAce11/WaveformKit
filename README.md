@@ -9,7 +9,7 @@ A SwiftUI waveform visualization framework for audio apps. Handles decoding, cac
 ![Swift](https://img.shields.io/badge/Swift-6.0+-orange?logo=swift)
 ![Platforms](https://img.shields.io/badge/Platforms-iOS%2017%20%7C%20macOS%2014%20%7C%20visionOS%201-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
-![Tests](https://img.shields.io/badge/Tests-129%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/Tests-150%20passing-brightgreen)
 
 ---
 
@@ -417,6 +417,27 @@ viewport.resetZoom()
 When `viewport` is `nil` (the default) or `zoomFactor == 1.0`, `WaveformView` behaves exactly as
 it did before 0.6.0 — no breaking change.
 
+### Detail at high zoom
+
+A summary's `amplitudes` hold about 200 bins, which is all a full-width seek bar needs — but zoom
+in 20× and only ten are left to spread across the bars. So `AudioDecoder` also builds a
+`WaveformSummaryPyramid`: a 16 384-bin base level plus coarser levels, each half the size of the
+last, computed in the same pass over the file. At every zoom factor the view draws from the
+coarsest level that still has a bin per bar, so zooming keeps revealing real transients instead
+of stretching blocks, and the per-frame cost tracks the bar count rather than the file length.
+
+There is nothing to switch on — summaries from `WaveformLoader` and `AudioDecoder` carry a
+pyramid by default. To tune it:
+
+```swift
+loader.load(url: fileURL, pyramidResolution: 65_536)   // more detail for long files
+loader.load(url: fileURL, pyramidResolution: 0)        // flat amplitudes only; never zooms
+```
+
+Bins are never shorter than 64 frames (~1.5 ms at 44.1 kHz), so very short files get fewer.
+The pyramid costs about 44 KB in the disk cache and 190 KB in memory at the default. Summaries
+you build yourself can carry one too: `WaveformSummary(..., pyramid: WaveformSummaryPyramid(amplitudes: fineBins))`.
+
 ---
 
 ## Players
@@ -554,7 +575,7 @@ WaveformCache.remove(url: url, targetBars: 200)
 WaveformCache.clear()
 ```
 
-Cache key: filename + file size + mtime + bar count + format version. Stored in
+Cache key: filename + file size + mtime + bar count + pyramid resolution + format version. Stored in
 `~/Library/Caches/WaveformKit/`.
 
 The cache is bounded by a byte budget and evicts least-recently-used entries once it is exceeded.
@@ -562,7 +583,7 @@ The cache is bounded by a byte budget and evicts least-recently-used entries onc
 import. Eviction runs automatically after every save.
 
 ```swift
-// Default: 32 MB, on the order of 10 000 summaries at 200 bars
+// Default: 32 MB — about 700 summaries with the default pyramid, 10 000 without
 WaveformCache.configuration = .default
 
 // Tighter budget — shrinking it evicts immediately rather than waiting for the next save
@@ -715,7 +736,7 @@ WaveformColors(
 - **Swift 6 toolchain required** — `Package.swift` uses `swift-tools-version: 6.0`, so Xcode 15 can no longer resolve the package. The language *mode* is still selectable; the toolchain is not.
 - **No tvOS** — SwiftUI marks `DragGesture` unavailable on tvOS, so seeking, panning, marker taps, and double-tap-to-reset cannot compile there. Everything else in the package is tvOS-clean; support needs a focus-engine interaction model, which is Phase 5.
 - **Long recordings** — `MicrophoneRecorder` halves the amplitude array when it exceeds `maxBins` (default 4000). Temporal resolution on the oldest portions degrades after each halving cycle.
-- **Zoom has no multi-resolution backing yet** — at high zoom factors the view resamples a slice of the same flat amplitude array, so detail is limited by `targetBars` at decode time. `WaveformSummaryPyramid` addresses this in Phase 4.
+- **Zoom detail ends at the pyramid's base** — past roughly `pyramidResolution / barCount` × zoom (about 80× for 200 bars at the default), bars repeat base bins rather than revealing more. Raise `pyramidResolution` for long files you expect to zoom deeply. Summaries without a pyramid (`MicrophoneRecorder`, `demo(...)`, server JSON that omits it) still stretch their flat `amplitudes`.
 - **Circular style and zoom** — pinch on `.circular` anchors horizontally, which is geometrically arbitrary on a radial layout. Zoom on circular works but is not the intended pairing.
 
 ---
@@ -757,9 +778,10 @@ shipping behaviour, and brings the package to Swift 6.
 - ❌ tvOS **not** added: `DragGesture` is unavailable there, so the entire interaction path fails
   to compile. Moved to Phase 5, where it needs a focus-engine model rather than a platform line
 
-### Phase 4 — Rendering Evolution
+### Phase 4 — Rendering Evolution *(0.7.0, in progress)*
 
-- `WaveformSummaryPyramid` — multi-resolution amplitude arrays for efficient high-zoom rendering
+- ✅ `WaveformSummaryPyramid` — multi-resolution amplitude arrays for efficient high-zoom
+  rendering, built by the decoder in the same pass and cached alongside the summary
 - Optional Metal-backed renderer path for spectrograms and large bar counts
 - ProMotion 120 Hz `TimelineView` for `.dancingBars`
 

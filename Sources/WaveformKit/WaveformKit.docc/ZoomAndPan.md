@@ -66,10 +66,22 @@ viewport.pan(by: 10)                             // forward ten seconds
 viewport.resetZoom()
 ```
 
-> Note: At high zoom factors the view resamples a slice of the same summary, so detail is bounded
-> by the bar count chosen at decode time. Multi-resolution summaries are planned.
+## Detail at high zoom
+
+A summary's ``WaveformSummary/amplitudes`` are decoded at a fixed, small resolution, which runs
+out quickly once you zoom in. ``AudioDecoder`` therefore also builds a
+``WaveformSummaryPyramid`` — a fine base level plus coarser levels, each half the last — and
+``WaveformView`` draws from the coarsest level that still has a bin for every bar. Zooming keeps
+revealing real transients, and the cost per frame follows the bar count, not the file length.
+
+Pyramids are on by default. Pass `pyramidResolution:` to ``WaveformLoader`` or ``AudioDecoder``
+to trade detail for cache size, or `0` to skip it.
+
+> Note: Detail stops at the pyramid's base level. Beyond that zoom factor the view repeats base
+> bins. Summaries without a pyramid fall back to stretching their flat amplitudes.
 
 ## See Also
 
 - ``WaveformViewport``
 - ``WaveformZoomOptions``
+- ``WaveformSummaryPyramid``

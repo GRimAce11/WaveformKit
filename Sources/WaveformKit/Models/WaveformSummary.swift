@@ -6,6 +6,15 @@ public struct WaveformSummary: Sendable, Codable, Equatable {
     public let sampleRate: Double
     public let channelCount: Int
 
+    /// Fine-grained amplitude levels for zoomed rendering, or `nil` when the summary has only
+    /// its flat `amplitudes`.
+    ///
+    /// `AudioDecoder` builds one by default.  When present, `WaveformView` draws from it at every
+    /// zoom level, so the bars keep gaining detail as you zoom in instead of stretching the
+    /// 200-odd bins in `amplitudes`.  Summaries from `MicrophoneRecorder`, `demo(...)`, or older
+    /// caches have none and render from `amplitudes` exactly as before.
+    public let pyramid: WaveformSummaryPyramid?
+
     /// Opaque cache-keying token.  Two summaries with identical amplitude data compare equal
     /// via `==` regardless of their `id` — `id` is intentionally excluded from `Equatable`.
     /// Each `init(...)` call and each `init(from:)` decode produces a fresh `UUID` so that
@@ -16,12 +25,14 @@ public struct WaveformSummary: Sendable, Codable, Equatable {
         amplitudes: [Float],
         duration: TimeInterval,
         sampleRate: Double,
-        channelCount: Int
+        channelCount: Int,
+        pyramid: WaveformSummaryPyramid? = nil
     ) {
         self.amplitudes  = amplitudes
         self.duration    = duration
         self.sampleRate  = sampleRate
         self.channelCount = channelCount
+        self.pyramid     = pyramid
         self.id          = UUID()
     }
 
@@ -31,13 +42,17 @@ public struct WaveformSummary: Sendable, Codable, Equatable {
         lhs.amplitudes   == rhs.amplitudes  &&
         lhs.duration     == rhs.duration    &&
         lhs.sampleRate   == rhs.sampleRate  &&
-        lhs.channelCount == rhs.channelCount
+        lhs.channelCount == rhs.channelCount &&
+        lhs.pyramid      == rhs.pyramid
     }
 
     // MARK: - Codable (id excluded — fresh UUID on each decode)
+    //
+    // `pyramid` is optional on the wire, so JSON written before 0.7.0 — or by a server that only
+    // sends flat amplitudes — still decodes.
 
     enum CodingKeys: String, CodingKey {
-        case amplitudes, duration, sampleRate, channelCount
+        case amplitudes, duration, sampleRate, channelCount, pyramid
     }
 
     public init(from decoder: Decoder) throws {
@@ -46,6 +61,7 @@ public struct WaveformSummary: Sendable, Codable, Equatable {
         duration      = try c.decode(TimeInterval.self,  forKey: .duration)
         sampleRate    = try c.decode(Double.self,        forKey: .sampleRate)
         channelCount  = try c.decode(Int.self,           forKey: .channelCount)
+        pyramid       = try c.decodeIfPresent(WaveformSummaryPyramid.self, forKey: .pyramid)
         id            = UUID()   // each decoded instance gets a distinct cache-key identity
     }
 

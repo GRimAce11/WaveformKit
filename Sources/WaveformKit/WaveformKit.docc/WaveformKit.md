@@ -51,6 +51,7 @@ WaveformView(loader: loader, currentTime: player.currentTime, onSeek: { player.s
 - <doc:ZoomAndPan>
 - ``WaveformViewport``
 - ``WaveformZoomOptions``
+- ``WaveformSummaryPyramid``
 
 ### Markers
 

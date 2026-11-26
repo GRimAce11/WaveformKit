@@ -3,7 +3,7 @@ import Accelerate
 
 // MARK: - ResampleCache
 
-/// Cache for resampled amplitude arrays, keyed by (summaryID, targetCount, visibleSlice).
+/// Cache for resampled amplitude arrays, keyed by (summaryID, targetCount, source level, visibleSlice).
 ///
 /// `WaveformView` holds one `ResampleCache` instance per view identity via `@State`.
 /// Under reactive or dancing-bars movement the view body runs at 30–60 Hz; without caching
@@ -26,9 +26,15 @@ final class ResampleCache {
     /// in-flight zoom levels; at 200 bars that is roughly 13 KB.
     static let defaultCapacity = 16
 
+    /// `level` value meaning "the summary's flat `amplitudes` array" rather than a pyramid level.
+    static let flatLevel = -1
+
     struct Key: Hashable {
         var summaryID: UUID
         var count: Int
+        /// Pyramid level the slice indexes into, or `flatLevel`.  Without it, the same
+        /// `startIdx..<endIdx` on two different levels would collide.
+        var level: Int
         var startIdx: Int
         var endIdx: Int
         var mode: WaveformResampleMode
@@ -51,10 +57,12 @@ final class ResampleCache {
     }
 
     func get(
-        summaryID: UUID, count: Int, startIdx: Int, endIdx: Int, mode: WaveformResampleMode
+        summaryID: UUID, count: Int, level: Int = ResampleCache.flatLevel,
+        startIdx: Int, endIdx: Int, mode: WaveformResampleMode
     ) -> [Float]? {
         let key = Key(
-            summaryID: summaryID, count: count, startIdx: startIdx, endIdx: endIdx, mode: mode
+            summaryID: summaryID, count: count, level: level,
+            startIdx: startIdx, endIdx: endIdx, mode: mode
         )
         guard let entry = store[key] else { return nil }
         clock &+= 1
@@ -63,8 +71,8 @@ final class ResampleCache {
     }
 
     func set(
-        _ result: [Float], summaryID: UUID, count: Int, startIdx: Int, endIdx: Int,
-        mode: WaveformResampleMode
+        _ result: [Float], summaryID: UUID, count: Int, level: Int = ResampleCache.flatLevel,
+        startIdx: Int, endIdx: Int, mode: WaveformResampleMode
     ) {
         // Evict stale entries the moment a new summary arrives.
         if summaryID != activeSummaryID {
@@ -73,7 +81,8 @@ final class ResampleCache {
         }
         clock &+= 1
         store[Key(
-            summaryID: summaryID, count: count, startIdx: startIdx, endIdx: endIdx, mode: mode
+            summaryID: summaryID, count: count, level: level,
+            startIdx: startIdx, endIdx: endIdx, mode: mode
         )] = Entry(value: result, lastUsed: clock)
         evictIfNeeded()
     }

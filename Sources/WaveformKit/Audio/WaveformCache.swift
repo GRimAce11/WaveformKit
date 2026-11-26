@@ -2,7 +2,7 @@ import Foundation
 
 /// Persists `WaveformSummary` instances on disk so repeat opens of the same file are instant.
 ///
-/// Cache key = file name + size + mtime + targetBars + format version.
+/// Cache key = file name + size + mtime + targetBars + pyramid resolution + format version.
 /// We deliberately avoid hashing file contents — `fingerprint` is cheap and stable enough
 /// for local audio that's not being rewritten in place.
 ///
@@ -13,7 +13,10 @@ import Foundation
 /// hit stamps the entry so that frequently-opened files outlive one-off imports.  Eviction runs
 /// automatically after every `save`, and can be triggered directly via `evictIfNeeded()`.
 public enum WaveformCache {
-    private static let formatVersion = 1
+    /// 2 since 0.7.0, when entries started carrying a `WaveformSummaryPyramid`.  Version-1
+    /// entries are not read (they would load without zoom detail) and age out through LRU
+    /// eviction like any other unused entry.
+    private static let formatVersion = 2
     private static let fileExtension = "wfm"
 
     // MARK: - Configuration
@@ -29,7 +32,8 @@ public enum WaveformCache {
             self.maximumBytes = max(0, maximumBytes)
         }
 
-        /// 32 MB — on the order of 10 000 summaries at the default 200 bars.
+        /// 32 MB — about 700 summaries at the defaults (200 bars plus a 16 384-bin pyramid,
+        /// roughly 46 KB each), or about 10 000 without a pyramid.
         public static let defaultMaximumBytes = 32 * 1024 * 1024
 
         public static let `default` = Configuration()
@@ -82,13 +86,13 @@ public enum WaveformCache {
         return dir
     }
 
-    private static func fingerprint(for url: URL, targetBars: Int) -> String? {
+    private static func fingerprint(for url: URL, targetBars: Int, pyramidResolution: Int) -> String? {
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path) else {
             return nil
         }
         let size = (attrs[.size] as? Int) ?? 0
         let mtime = Int((attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0)
-        return "v\(formatVersion)-\(url.lastPathComponent)-\(size)-\(mtime)-b\(targetBars)"
+        return "v\(formatVersion)-\(url.lastPathComponent)-\(size)-\(mtime)-b\(targetBars)-p\(max(0, pyramidResolution))"
     }
 
     private static func fileURL(for key: String) -> URL? {
@@ -97,8 +101,15 @@ public enum WaveformCache {
 
     // MARK: - Read / write
 
-    public static func load(url: URL, targetBars: Int) -> WaveformSummary? {
-        guard let key = fingerprint(for: url, targetBars: targetBars),
+    /// The cached summary for this file, decoded at these settings, if there is one.
+    ///
+    /// `pyramidResolution` is part of the key: pass the value the summary was decoded with.
+    public static func load(
+        url: URL,
+        targetBars: Int,
+        pyramidResolution: Int = WaveformSummaryPyramid.defaultResolution
+    ) -> WaveformSummary? {
+        guard let key = fingerprint(for: url, targetBars: targetBars, pyramidResolution: pyramidResolution),
               let fileURL = fileURL(for: key),
               let data = try? Data(contentsOf: fileURL) else { return nil }
         guard let summary = try? JSONDecoder().decode(WaveformSummary.self, from: data) else {
@@ -109,17 +120,27 @@ public enum WaveformCache {
         return summary
     }
 
-    public static func save(_ summary: WaveformSummary, url: URL, targetBars: Int) {
-        guard let key = fingerprint(for: url, targetBars: targetBars),
+    /// Store `summary` under this file and these decode settings.
+    public static func save(
+        _ summary: WaveformSummary,
+        url: URL,
+        targetBars: Int,
+        pyramidResolution: Int = WaveformSummaryPyramid.defaultResolution
+    ) {
+        guard let key = fingerprint(for: url, targetBars: targetBars, pyramidResolution: pyramidResolution),
               let fileURL = fileURL(for: key),
               let data = try? JSONEncoder().encode(summary) else { return }
         try? data.write(to: fileURL, options: .atomic)
         evictIfNeeded()
     }
 
-    /// Remove the cache entry for a specific URL/bar count.
-    public static func remove(url: URL, targetBars: Int) {
-        guard let key = fingerprint(for: url, targetBars: targetBars),
+    /// Remove the cache entry for a specific URL and decode settings.
+    public static func remove(
+        url: URL,
+        targetBars: Int,
+        pyramidResolution: Int = WaveformSummaryPyramid.defaultResolution
+    ) {
+        guard let key = fingerprint(for: url, targetBars: targetBars, pyramidResolution: pyramidResolution),
               let fileURL = fileURL(for: key) else { return }
         try? FileManager.default.removeItem(at: fileURL)
     }

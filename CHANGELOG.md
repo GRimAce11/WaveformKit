@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+Phase 4 begins: zoomed waveforms gain real detail. Read **Changed** before upgrading — bar heights
+at 1× shift slightly for decoded files, and existing disk-cache entries are re-decoded once.
+
+### Added
+
+- `WaveformSummaryPyramid` — multi-resolution amplitude data. A fine base level (16 384 bins by
+  default) plus a ladder of coarser levels, each half the last, kept for both `.peak` and
+  `.mean` pooling so the level chosen never changes the mode's result. Public API:
+  `init(amplitudes:)`, `resolution`, `levelCount`, `isEmpty`, `baseAmplitudes`,
+  `level(_:mode:)`, `amplitudes(in:count:mode:)`, `defaultResolution`. `Codable`, `Sendable`,
+  `Equatable`. Values are stored at 16-bit precision, quantised at construction so a `Codable`
+  round trip is exact; only the base level is encoded (base64, ~44 KB at the default).
+- `WaveformSummary.pyramid` (optional) and a matching `pyramid:` parameter on its initialiser.
+  Decoding JSON without the key yields `nil`, so older caches and server payloads still load.
+- `pyramidResolution:` parameter on `AudioDecoder.summarize`, both `WaveformLoader.load(url:)`
+  forms, both `WaveformLoader.load(source:)` forms, and `WaveformCache.load` / `save` /
+  `remove`. Defaults to `WaveformSummaryPyramid.defaultResolution`; `0` skips the pyramid.
+  The pyramid is computed in the same pass as the bars — no second read of the file.
+
+### Changed
+
+- `WaveformView` draws from `summary.pyramid` whenever the summary has one, at every zoom level,
+  picking the coarsest level with at least one bin per bar. Drawing from it at 1× too keeps bar
+  heights on one scale through a pinch. The trade-off: at 1× the bars now pool fine-grained bins
+  normalised to their own peak rather than the 200 coarse ones, so `.peak` bars look a little
+  spikier and `.mean` bars a little lower than in 0.6.0. Decode with `pyramidResolution: 0` to
+  keep the previous look exactly.
+- Disk cache format version 2; `pyramidResolution` is part of the cache key. Version-1 entries are
+  ignored and age out through normal LRU eviction, so each file is decoded once more after
+  upgrading. The default 32 MB budget now holds about 700 summaries instead of about 10 000.
+
 ## [0.6.0] - 2026-09-17
 
 Phase 3 in full: the viewport gets gestures, the package moves to the Swift 6 language mode, and

@@ -42,6 +42,7 @@ public final class WaveformLoader {
     @ObservationIgnored private var lastURL: URL?
     @ObservationIgnored private var lastTargetBars: Int = 200
     @ObservationIgnored private var lastUseCache: Bool = true
+    @ObservationIgnored private var lastPyramidResolution = WaveformSummaryPyramid.defaultResolution
 
     public init() {}
 
@@ -51,10 +52,20 @@ public final class WaveformLoader {
     ///
     /// Any in-progress decode is cancelled before the new one starts.
     /// The disk cache is checked first; a cache hit resolves immediately with no progress events.
-    public func load(url: URL, targetBars: Int = 200, useCache: Bool = true) {
+    ///
+    /// `pyramidResolution` sets how much detail zooming can reveal — see
+    /// `AudioDecoder.summarize(url:targetBars:pyramidResolution:onProgress:)`.  Pass `0` for a
+    /// summary with flat `amplitudes` only, if the view never zooms and cache size matters.
+    public func load(
+        url: URL,
+        targetBars: Int = 200,
+        pyramidResolution: Int = WaveformSummaryPyramid.defaultResolution,
+        useCache: Bool = true
+    ) {
         cancel()
         lastURL        = url
         lastTargetBars = targetBars
+        lastPyramidResolution = pyramidResolution
         lastUseCache   = useCache
         state          = .loading(progress: 0)
 
@@ -62,7 +73,9 @@ public final class WaveformLoader {
             guard let self else { return }
 
             // ── Cache hit — instant, no progress ticks ────────────────────────────────
-            if useCache, let cached = WaveformCache.load(url: url, targetBars: targetBars) {
+            if useCache, let cached = WaveformCache.load(
+                url: url, targetBars: targetBars, pyramidResolution: pyramidResolution
+            ) {
                 guard !Task.isCancelled else { return }
                 self.state = .loaded(cached)
                 return
@@ -73,6 +86,7 @@ public final class WaveformLoader {
                 let summary = try await AudioDecoder.summarize(
                     url: url,
                     targetBars: targetBars,
+                    pyramidResolution: pyramidResolution,
                     onProgress: { [weak self] p in
                         // Progress callback fires on the decoder's background executor.
                         // Hop to MainActor to update observable state.
@@ -83,7 +97,12 @@ public final class WaveformLoader {
                     }
                 )
                 guard !Task.isCancelled else { return }
-                if useCache { WaveformCache.save(summary, url: url, targetBars: targetBars) }
+                if useCache {
+                    WaveformCache.save(
+                        summary, url: url, targetBars: targetBars,
+                        pyramidResolution: pyramidResolution
+                    )
+                }
                 self.state = .loaded(summary)
             } catch is CancellationError {
                 // Task was cancelled via cancel() — reset to idle without surfacing an error.
@@ -100,10 +119,18 @@ public final class WaveformLoader {
     /// resolves to `.loaded` immediately — no decode, no cache write, no progress ticks — so
     /// callers holding a server-supplied summary can use the same code path as callers holding
     /// a file.
-    public func load(source: AudioSource, targetBars: Int = 200, useCache: Bool = true) {
+    public func load(
+        source: AudioSource,
+        targetBars: Int = 200,
+        pyramidResolution: Int = WaveformSummaryPyramid.defaultResolution,
+        useCache: Bool = true
+    ) {
         switch source {
         case .file(let url):
-            load(url: url, targetBars: targetBars, useCache: useCache)
+            load(
+                url: url, targetBars: targetBars,
+                pyramidResolution: pyramidResolution, useCache: useCache
+            )
         case .precomputed(let summary):
             set(summary)
         }
@@ -119,7 +146,10 @@ public final class WaveformLoader {
     /// Retry after a failure.  Safe to call from `.failed`; no-op from any other state.
     public func retry() {
         guard case .failed = state, let url = lastURL else { return }
-        load(url: url, targetBars: lastTargetBars, useCache: lastUseCache)
+        load(
+            url: url, targetBars: lastTargetBars,
+            pyramidResolution: lastPyramidResolution, useCache: lastUseCache
+        )
     }
 
     /// Directly inject a pre-computed summary — skips decoding entirely.
@@ -144,13 +174,22 @@ public final class WaveformLoader {
     public static func load(
         url: URL,
         targetBars: Int = 200,
+        pyramidResolution: Int = WaveformSummaryPyramid.defaultResolution,
         useCache: Bool = true
     ) async throws -> WaveformSummary {
-        if useCache, let cached = WaveformCache.load(url: url, targetBars: targetBars) {
+        if useCache, let cached = WaveformCache.load(
+            url: url, targetBars: targetBars, pyramidResolution: pyramidResolution
+        ) {
             return cached
         }
-        let summary = try await AudioDecoder.summarize(url: url, targetBars: targetBars)
-        if useCache { WaveformCache.save(summary, url: url, targetBars: targetBars) }
+        let summary = try await AudioDecoder.summarize(
+            url: url, targetBars: targetBars, pyramidResolution: pyramidResolution
+        )
+        if useCache {
+            WaveformCache.save(
+                summary, url: url, targetBars: targetBars, pyramidResolution: pyramidResolution
+            )
+        }
         return summary
     }
 
@@ -159,11 +198,15 @@ public final class WaveformLoader {
     public static func load(
         source: AudioSource,
         targetBars: Int = 200,
+        pyramidResolution: Int = WaveformSummaryPyramid.defaultResolution,
         useCache: Bool = true
     ) async throws -> WaveformSummary {
         switch source {
         case .file(let url):
-            return try await load(url: url, targetBars: targetBars, useCache: useCache)
+            return try await load(
+                url: url, targetBars: targetBars,
+                pyramidResolution: pyramidResolution, useCache: useCache
+            )
         case .precomputed(let summary):
             return summary
         }

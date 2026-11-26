@@ -607,44 +607,62 @@ public struct WaveformView: View {
 
     /// Returns resampled amplitudes for the current viewport and bar count.
     ///
-    /// Results are cached in `resampleCache` keyed by (summaryID, count, visibleSlice).
+    /// Draws from `summary.pyramid` when the summary has one — at every zoom level, not only
+    /// when zoomed, so bar heights stay on one scale through a pinch instead of jumping when
+    /// the source switches.  Otherwise slices the flat `amplitudes` array.
+    ///
+    /// Results are cached in `resampleCache` keyed by (summaryID, count, level, visibleSlice).
     /// Under reactive or dancing-bars movement (30–60 Hz re-renders) this eliminates
     /// the per-frame `[Float]` allocation that the original uncached implementation incurred.
     private func resampled(to count: Int) -> [Float] {
         let src = summary.amplitudes
-        guard !src.isEmpty else {
+        guard !src.isEmpty || summary.pyramid?.isEmpty == false else {
             if case .idle = movement { return Self.placeholderAmplitudes(count: count) }
             return []
         }
         guard count > 0 else { return [] }
 
-        // Determine which slice of the amplitude array is currently visible.
-        // Full range when no viewport is set or zoom factor == 1.
+        let zoomedViewport = viewportBinding?.wrappedValue.isZoomed == true
+            ? viewportBinding?.wrappedValue : nil
+
+        // Pick the source array and the slice of it that is visible.
+        let level: Int
+        let levelData: [Float]
         let startIdx: Int
         let endIdx: Int
-        if let vp = viewportBinding?.wrappedValue, vp.isZoomed {
+        if let pyramid = summary.pyramid,
+           let slice = pyramid.slice(for: zoomedViewport?.normalizedRange ?? 0...1, count: count) {
+            level     = slice.level
+            levelData = pyramid.level(slice.level, mode: resampleMode)
+            startIdx  = slice.start
+            endIdx    = slice.end
+        } else if let vp = zoomedViewport {
             let range = vp.visibleIndices(totalBars: src.count)
-            startIdx = range.lowerBound
-            endIdx   = range.upperBound
+            level     = ResampleCache.flatLevel
+            levelData = src
+            startIdx  = range.lowerBound
+            endIdx    = range.upperBound
         } else {
-            startIdx = 0
-            endIdx   = src.count
+            level     = ResampleCache.flatLevel
+            levelData = src
+            startIdx  = 0
+            endIdx    = src.count
         }
         guard startIdx < endIdx else { return [] }
 
         if let cached = resampleCache.get(
-            summaryID: summary.id, count: count,
+            summaryID: summary.id, count: count, level: level,
             startIdx: startIdx, endIdx: endIdx, mode: resampleMode
         ) {
             return cached
         }
 
         let result = resampleAmplitudes(
-            src: src, startIdx: startIdx, endIdx: endIdx,
+            src: levelData, startIdx: startIdx, endIdx: endIdx,
             targetCount: count, mode: resampleMode
         )
         resampleCache.set(
-            result, summaryID: summary.id, count: count,
+            result, summaryID: summary.id, count: count, level: level,
             startIdx: startIdx, endIdx: endIdx, mode: resampleMode
         )
         return result

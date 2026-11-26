@@ -1485,3 +1485,245 @@ private final class ProgressCollector: @unchecked Sendable {
         lock.withLock { storage }
     }
 }
+
+// MARK: - WaveformSummaryPyramid (Phase 4)
+
+extension WaveformKitTests {
+
+    /// Deterministic pseudo-random bins in 0...1, so failures reproduce.
+    private func pyramidFixture(count: Int, seed: UInt64 = 7) -> [Float] {
+        var state = seed
+        return (0..<count).map { _ in
+            state = state &* 6364136223846793005 &+ 1442695040888963407
+            return Float(state >> 40) / Float(1 << 24)
+        }
+    }
+
+    func testPyramidLevelsHalveDownToOneBin() {
+        let pyramid = WaveformSummaryPyramid(amplitudes: pyramidFixture(count: 10))
+        XCTAssertEqual(pyramid.resolution, 10)
+        XCTAssertEqual((0..<pyramid.levelCount).map { pyramid.level($0).count }, [10, 5, 3, 2, 1],
+                       "Each level halves the previous one, carrying an odd tail bin up unpaired")
+    }
+
+    func testEmptyPyramid() {
+        let pyramid = WaveformSummaryPyramid(amplitudes: [])
+        XCTAssertTrue(pyramid.isEmpty)
+        XCTAssertEqual(pyramid.levelCount, 0)
+        XCTAssertEqual(pyramid.amplitudes(count: 10), [])
+        XCTAssertNil(pyramid.slice(for: 0...1, count: 10))
+    }
+
+    func testPyramidPeakLevelsAreExactMaxima() {
+        let base = pyramidFixture(count: 1000)
+        let pyramid = WaveformSummaryPyramid(amplitudes: base)
+        let quantised = pyramid.baseAmplitudes
+        let level3 = pyramid.level(3, mode: .peak)
+        for j in level3.indices {
+            let block = quantised[(j * 8)..<min(quantised.count, (j + 1) * 8)]
+            XCTAssertEqual(level3[j], block.max(), "Level 3 bin \(j) must be the loudest of its 8 base bins")
+        }
+    }
+
+    func testPyramidMeanLevelsAverage() {
+        let pyramid = WaveformSummaryPyramid(amplitudes: [0.2, 0.4, 0.6, 0.8])
+        let level1 = pyramid.level(1, mode: .mean)
+        XCTAssertEqual(level1.count, 2)
+        XCTAssertEqual(level1[0], 0.3, accuracy: 1e-4)
+        XCTAssertEqual(level1[1], 0.7, accuracy: 1e-4)
+        XCTAssertEqual(pyramid.level(1, mode: .peak)[1], 0.8, accuracy: 1e-4)
+        XCTAssertEqual(pyramid.level(99), [], "An out-of-range level is empty, not a crash")
+    }
+
+    func testPyramidClampsAndQuantises() {
+        let pyramid = WaveformSummaryPyramid(amplitudes: [-1, 2, .nan, .infinity, 0.5])
+        let base = pyramid.baseAmplitudes
+        XCTAssertEqual(base[0], 0)
+        XCTAssertEqual(base[1], 1)
+        XCTAssertEqual(base[2], 0, "NaN reads as silence")
+        XCTAssertEqual(base[3], 0, "Infinity reads as silence")
+        XCTAssertEqual(base[4], 0.5, accuracy: 1.0 / 65_535)
+    }
+
+    func testPyramidCodableRoundTripIsExact() throws {
+        let original = WaveformSummaryPyramid(amplitudes: pyramidFixture(count: 777))
+        let decoded = try JSONDecoder().decode(
+            WaveformSummaryPyramid.self, from: JSONEncoder().encode(original)
+        )
+        XCTAssertEqual(decoded, original, "Quantising at init makes the 16-bit encoding lossless")
+        XCTAssertEqual(decoded.levelCount, original.levelCount, "Coarser levels are rebuilt on decode")
+    }
+
+    func testPyramidEncodingIsCompact() throws {
+        let pyramid = WaveformSummaryPyramid(
+            amplitudes: pyramidFixture(count: WaveformSummaryPyramid.defaultResolution)
+        )
+        let bytes = try JSONEncoder().encode(pyramid).count
+        // 16 384 × 2 bytes, base64-encoded ≈ 43.7 KB.  JSON numbers would be ~5× that.
+        XCTAssertLessThan(bytes, 45_000)
+    }
+
+    func testPyramidRejectsOddByteCount() {
+        let json = Data(#"{"base":"AAAA"}"#.utf8)   // base64 for three bytes
+        XCTAssertThrowsError(try JSONDecoder().decode(WaveformSummaryPyramid.self, from: json))
+    }
+
+    func testPyramidSliceAtFullRangePicksCoarsestSufficientLevel() throws {
+        let pyramid = WaveformSummaryPyramid(
+            amplitudes: pyramidFixture(count: WaveformSummaryPyramid.defaultResolution)
+        )
+        let slice = try XCTUnwrap(pyramid.slice(for: 0...1, count: 200))
+        // 16 384 >> 6 = 256 ≥ 200, and >> 7 = 128 < 200.
+        XCTAssertEqual(slice, .init(level: 6, start: 0, end: 256))
+    }
+
+    func testPyramidSliceWhenZoomedUsesFinerLevel() throws {
+        let pyramid = WaveformSummaryPyramid(
+            amplitudes: pyramidFixture(count: WaveformSummaryPyramid.defaultResolution)
+        )
+        // 50× zoom: 2 % of 16 384 is 328 bins, which only the base level can cover at 200 bars.
+        let slice = try XCTUnwrap(pyramid.slice(for: 0...0.02, count: 200))
+        XCTAssertEqual(slice.level, 0)
+        XCTAssertEqual(slice.end - slice.start, 328)
+
+        // Past the base resolution the base is still used; the resampler repeats bins.
+        let deep = try XCTUnwrap(pyramid.slice(for: 0.5...0.501, count: 200))
+        XCTAssertEqual(deep.level, 0)
+        XCTAssertEqual(pyramid.amplitudes(in: 0.5...0.501, count: 200).count, 200)
+    }
+
+    func testPyramidAmplitudesMatchResamplingTheBase() {
+        // With a power-of-two base, each ladder is the exact reduction, so picking a level must
+        // give the same bars as resampling the whole base directly.
+        let pyramid = WaveformSummaryPyramid(amplitudes: pyramidFixture(count: 1024))
+        let base = pyramid.baseAmplitudes
+        for mode in WaveformResampleMode.allCases {
+            let viaPyramid = pyramid.amplitudes(count: 64, mode: mode)
+            let direct = resampleAmplitudes(src: base, startIdx: 0, endIdx: 1024, targetCount: 64, mode: mode)
+            XCTAssertEqual(viaPyramid.count, 64)
+            for (a, b) in zip(viaPyramid, direct) {
+                XCTAssertEqual(a, b, accuracy: 1e-5, "\(mode) via pyramid must match the direct reduction")
+            }
+        }
+    }
+
+    func testPyramidRevealsDetailTheFlatArrayCannot() {
+        // One transient in 16 384 bins.  The flat 200-bin summary smears it across the whole of
+        // a 1 % zoom window; the pyramid keeps it about one bar wide.
+        var fine = [Float](repeating: 0.1, count: WaveformSummaryPyramid.defaultResolution)
+        fine[8_100] = 1.0
+        let pyramid = WaveformSummaryPyramid(amplitudes: fine)
+        let flat = resampleAmplitudes(src: fine, startIdx: 0, endIdx: fine.count, targetCount: 200, mode: .peak)
+
+        var viewport = WaveformViewport(duration: 100)
+        viewport.visibleRange = 49...50          // 1 % of the file, containing the transient
+        let bars = 100
+        let range = viewport.visibleIndices(totalBars: flat.count)
+        let stretched = resampleAmplitudes(
+            src: flat, startIdx: range.lowerBound, endIdx: range.upperBound, targetCount: bars
+        )
+        let detailed = pyramid.amplitudes(in: viewport.normalizedRange, count: bars)
+
+        XCTAssertGreaterThanOrEqual(stretched.filter { $0 > 0.5 }.count, 20,
+                                    "The flat array stretches the transient into a wide block")
+        XCTAssertLessThanOrEqual(detailed.filter { $0 > 0.5 }.count, 2,
+                                 "The pyramid keeps the transient narrow")
+        XCTAssertEqual(detailed.max() ?? 0, 1.0, accuracy: 1e-4)
+    }
+
+    func testResampleCacheKeyIncludesLevel() {
+        let cache = ResampleCache()
+        let id = UUID()
+        cache.set([0.5], summaryID: id, count: 1, level: 3, startIdx: 0, endIdx: 4, mode: .peak)
+        XCTAssertNil(cache.get(summaryID: id, count: 1, level: 4, startIdx: 0, endIdx: 4, mode: .peak))
+        XCTAssertNil(cache.get(summaryID: id, count: 1, startIdx: 0, endIdx: 4, mode: .peak),
+                     "A pyramid slice must not collide with the same slice of the flat array")
+        XCTAssertEqual(cache.get(summaryID: id, count: 1, level: 3, startIdx: 0, endIdx: 4, mode: .peak), [0.5])
+    }
+
+    // MARK: Summary integration
+
+    func testSummaryDecodesWithoutPyramidKey() throws {
+        // JSON written before 0.7.0, or by a server sending flat amplitudes only.
+        let json = Data(#"{"amplitudes":[0.1,0.9],"duration":2,"sampleRate":44100,"channelCount":1}"#.utf8)
+        let summary = try JSONDecoder().decode(WaveformSummary.self, from: json)
+        XCTAssertNil(summary.pyramid)
+        XCTAssertEqual(summary.amplitudes, [0.1, 0.9])
+    }
+
+    func testSummaryRoundTripsPyramid() throws {
+        let original = WaveformSummary(
+            amplitudes: [0.2, 0.8], duration: 2, sampleRate: 44_100, channelCount: 1,
+            pyramid: WaveformSummaryPyramid(amplitudes: pyramidFixture(count: 300))
+        )
+        let decoded = try JSONDecoder().decode(WaveformSummary.self, from: JSONEncoder().encode(original))
+        XCTAssertEqual(decoded, original)
+        XCTAssertEqual(decoded.pyramid?.resolution, 300)
+    }
+
+    func testSummaryEqualityIncludesPyramid() {
+        let plain = WaveformSummary(amplitudes: [0.5], duration: 1, sampleRate: 44_100, channelCount: 1)
+        let detailed = WaveformSummary(
+            amplitudes: [0.5], duration: 1, sampleRate: 44_100, channelCount: 1,
+            pyramid: WaveformSummaryPyramid(amplitudes: [0.5, 0.4])
+        )
+        XCTAssertNotEqual(plain, detailed)
+    }
+
+    // MARK: Decoder and cache
+
+    func testDecoderBuildsPyramid() async throws {
+        let url = try makeToneFile(duration: 2.0)
+        defer { removeFile(url) }
+
+        let summary = try await AudioDecoder.summarize(url: url, targetBars: 100)
+        let pyramid = try XCTUnwrap(summary.pyramid, "Decoding builds a pyramid by default")
+
+        // 88 200 frames at the 64-frame floor (the default resolution would give 5 frames a bin).
+        let expected = 88_200 / AudioDecoder.minimumFramesPerPyramidBin
+        XCTAssertEqual(Double(pyramid.resolution), Double(expected), accuracy: 2)
+        XCTAssertEqual(pyramid.baseAmplitudes.max() ?? 0, 1.0, accuracy: 1e-3,
+                       "Pyramid bins are normalised to a unit peak, like the bars")
+    }
+
+    func testDecoderPyramidTracksEnvelope() async throws {
+        let url = try makeToneFile(duration: 2.0, envelope: { $0 })
+        defer { removeFile(url) }
+
+        let summary = try await AudioDecoder.summarize(url: url, targetBars: 20)
+        let base = try XCTUnwrap(summary.pyramid).baseAmplitudes
+        let quarter = base.count / 4
+        let early = base[..<quarter].reduce(0, +) / Float(quarter)
+        let late = base[(base.count - quarter)...].reduce(0, +) / Float(quarter)
+        XCTAssertLessThan(early, late * 0.5, "A rising ramp must read quieter early than late")
+    }
+
+    func testDecoderSkipsPyramidWhenDisabled() async throws {
+        let url = try makeToneFile(duration: 1.0)
+        defer { removeFile(url) }
+
+        let summary = try await AudioDecoder.summarize(url: url, targetBars: 40, pyramidResolution: 0)
+        XCTAssertNil(summary.pyramid)
+    }
+
+    func testDecoderSkipsPyramidWhenNoFinerThanBars() async throws {
+        // 4 410 frames over 100 bars is 44 frames a bar — already under the 64-frame floor.
+        let url = try makeToneFile(duration: 0.1)
+        defer { removeFile(url) }
+
+        let summary = try await AudioDecoder.summarize(url: url, targetBars: 100)
+        XCTAssertNil(summary.pyramid)
+    }
+
+    func testCacheKeyIncludesPyramidResolution() throws {
+        try withTemporaryCache(budget: WaveformCache.Configuration.defaultMaximumBytes) { dir in
+            let audio = try makeSourceFile(dir, name: "p.wav")
+            let summary = WaveformSummary.demo(duration: 30, bars: 64)
+            WaveformCache.save(summary, url: audio, targetBars: 64, pyramidResolution: 0)
+
+            XCTAssertNil(WaveformCache.load(url: audio, targetBars: 64),
+                         "A flat-only entry must not satisfy a request for a pyramid")
+            XCTAssertEqual(WaveformCache.load(url: audio, targetBars: 64, pyramidResolution: 0), summary)
+        }
+    }
+}
