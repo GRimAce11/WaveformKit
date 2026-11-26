@@ -34,6 +34,22 @@ at 1× shift slightly for decoded files, and existing disk-cache entries are re-
   without a Metal device or while the shader compiles on first use. The shader is compiled at
   runtime from source, so the package needs no Metal Toolchain to build.
 
+- **Region selection** (Phase 5). `WaveformView` gains `selection: Binding<ClosedRange<TimeInterval>?>?`
+  and `selectionOptions: WaveformSelectionOptions` on both initialisers. Create a range with a
+  long-press-then-drag (default) or a plain drag (`.editor`), adjust either edge through a
+  44-point target, and clear it with a tap outside. `WaveformSelectionOptions` adds
+  `activation` (`.longPress(holdDuration:)` / `.drag`), `minimumLength`, `snapInterval`,
+  `clearsOnTapOutside`, `updatesWhileDragging` and `tint`, plus pure helpers `snapped`,
+  `range(from:to:duration:enforcingMinimum:)`, `activatesSelection` and `accessibilityStep`.
+  VoiceOver gets *Select from playhead* / *Clear selection* actions and adjustable
+  start and end elements. Works zoomed; ignored by `.circular`.
+
+### Fixed
+
+- Markers ignored the viewport. While zoomed, they were drawn — and hit-tested, and placed for
+  VoiceOver — at their full-duration positions instead of over the audio they mark. They now
+  follow the visible range, and markers outside it are skipped rather than clamped to the edges.
+
 ### Changed
 
 - `WaveformView.snapshot` always renders with `Canvas`, whatever backend the environment sets.

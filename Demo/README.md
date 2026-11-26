@@ -12,14 +12,15 @@ An Xcode project that demonstrates every major WaveformKit capability in a singl
 | **Microphone** | Live FFT, recording, interruption handling, playback of captured file |
 | **Custom Renderer** | Three `WaveformRenderer` implementations: oscilloscope, mirror fill, level meter |
 | **Viewport** | Pinch / pan / double-tap gestures plus the programmatic `WaveformViewport` API |
+| **Selection** | Region selection: both activation modes, edge dragging, snapping, zoom to selection |
 
 ## Requirements
 
 - iOS 17.0+
-- Xcode 15+
-- Swift 5.9+
+- Xcode 16+ (WaveformKit needs a Swift 6 toolchain)
 
-The only dependency is **WaveformKit** (fetched via SPM from `https://github.com/GRimAce11/WaveformKit`).
+The only dependency is **WaveformKit**, referenced by local path (`..`), so the demo always builds
+against the checkout it sits in — no SPM fetch, and changes to the package show up immediately.
 
 ## Running
 
@@ -49,7 +50,8 @@ Test Waveform/
 ├── AsyncLoadingScreen.swift        WaveformState lifecycle
 ├── MicrophoneRecorderScreen.swift  Live recording + playback
 ├── CustomRendererScreen.swift      WaveformRenderer protocol examples
-└── ViewportScreen.swift            WaveformViewport gestures + programmatic zoom/pan
+├── ViewportScreen.swift            WaveformViewport gestures + programmatic zoom/pan
+└── SelectionScreen.swift           Region selection gestures, options, and actions
 ```
 
 ## License

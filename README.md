@@ -35,6 +35,9 @@ Key design decisions that differentiate it:
 - `WaveformLoader` with `WaveformState` async lifecycle — progress, error, and retry built in
 - `WaveformRenderer` protocol for fully custom styles without forking
 - Pinch-to-zoom, drag-to-pan, and double-tap-to-reset via `WaveformViewport` — `ScrollView`-safe
+- Region selection with draggable edges, snapping, and VoiceOver editing, bound to a plain `ClosedRange`
+- Multi-resolution summaries (`WaveformSummaryPyramid`), so zooming in reveals real detail
+- Opt-in Metal backend for timelines with thousands of bars
 - Seek gestures on all styles — linear drag on bar/line/dot styles, angular drag on circular
 - Markers and region overlays with tap callbacks, VoiceOver children, and circular-style support
 - Live microphone capture (`MicrophoneRecorder`) with bounded memory and interruption handling
@@ -86,6 +89,7 @@ A runnable showcase app lives in [`Demo/`](Demo/). Open `Demo/Test Waveform.xcod
 | **Microphone** | Live FFT recording + interruption handling + captured-file playback |
 | **Custom Renderer** | Three `WaveformRenderer` implementations with annotated source |
 | **Viewport** | Pinch / pan / double-tap gestures, both `dragBehavior` modes, inside a `ScrollView` |
+| **Selection** | Create and adjust a region, both activation modes, snapping, zoom to selection |
 
 The demo generates a test tone on-device at first launch — no bundled audio files, no network required.
 
@@ -471,6 +475,60 @@ you build yourself can carry one too: `WaveformSummary(..., pyramid: WaveformSum
 
 ---
 
+## Region Selection
+
+Pass a `selection` binding and the waveform becomes a range picker — for trimming a voice
+note, looping a section, or exporting a clip. The range is a plain
+`ClosedRange<TimeInterval>?` that you own:
+
+```swift
+@State private var selection: ClosedRange<TimeInterval>?
+
+WaveformView(
+    summary:          summary,
+    currentTime:      player.currentTime,
+    viewport:         $viewport,          // optional — selection works zoomed or not
+    selection:        $selection,
+    selectionOptions: .editor,
+    onSeek:           { player.seek(to: $0) }
+)
+
+Button("Trim") { trim(to: selection!) }
+    .disabled(selection == nil)
+```
+
+| Gesture | Result |
+|---|---|
+| Hold, then drag *(default `.longPress()`)* | Creates a selection; a plain drag still seeks |
+| Drag *(`.editor`, i.e. `activation: .drag`)* | Creates a selection; taps still seek |
+| Drag an edge | Adjusts that edge — 44 pt touch target; dragging past the other edge swaps them |
+| Tap outside | Clears the selection (`clearsOnTapOutside`) and seeks |
+
+```swift
+WaveformSelectionOptions(
+    activation:           .longPress(holdDuration: 0.4),
+    minimumLength:        0.1,     // shorter drags are discarded on release
+    snapInterval:         0.5,     // snap both edges to a 0.5 s grid; nil = free
+    clearsOnTapOutside:   true,
+    updatesWhileDragging: false,   // write the binding once, on release
+    tint:                 .orange  // nil = the played colour
+)
+```
+
+`updatesWhileDragging: false` is for selections that trigger expensive work — restarting a
+looped playback, regenerating a preview — so it runs once per gesture rather than once per
+frame. The range under the finger is drawn live either way.
+
+**VoiceOver.** With no selection, the waveform offers a *Select from playhead* action. Once one
+exists, *Selection start* and *Selection end* become adjustable elements (swipe up/down moves
+them by the snap interval, or 1 % of the file), the waveform's label reads the range, and a
+*Clear selection* action appears.
+
+Selection is drawn and hit-tested through the viewport, so it stays under your finger while
+zoomed. `.circular` ignores it.
+
+---
+
 ## Players
 
 ### AVAudioEnginePlayer — local files + FFT
@@ -769,6 +827,7 @@ WaveformColors(
 - **Long recordings** — `MicrophoneRecorder` halves the amplitude array when it exceeds `maxBins` (default 4000). Temporal resolution on the oldest portions degrades after each halving cycle.
 - **Zoom detail ends at the pyramid's base** — past roughly `pyramidResolution / barCount` × zoom (about 80× for 200 bars at the default), bars repeat base bins rather than revealing more. Raise `pyramidResolution` for long files you expect to zoom deeply. Summaries without a pyramid (`MicrophoneRecorder`, `demo(...)`, server JSON that omits it) still stretch their flat `amplitudes`.
 - **Metal covers bar styles only** — `.line`, `.dots`, `.circular`, `.dancingBars` and `.custom` always draw with `Canvas`, whatever `waveformRenderingBackend` says. Wide-gamut (Display P3) colours render at their nearest sRGB value on the Metal path.
+- **Selection does not auto-scroll** — while zoomed, dragging an edge to the side of the view stops at the visible range instead of scrolling the timeline. Zoom out, or pan, to reach further. `.circular` has no selection.
 - **Circular style and zoom** — pinch on `.circular` anchors horizontally, which is geometrically arbitrary on a radial layout. Zoom on circular works but is not the intended pairing.
 
 ---
@@ -816,12 +875,14 @@ shipping behaviour, and brings the package to Swift 6.
   rendering, built by the decoder in the same pass and cached alongside the summary
 - ✅ Optional Metal-backed renderer path for large bar counts —
   `.waveformRenderingBackend(.metal / .automatic())` for `.bars` and `.mirroredBars`
-- Metal spectrogram — needs a spectrogram data model (FFT history over time) first
-- ProMotion 120 Hz `TimelineView` for `.dancingBars`
+- ⏸ Metal spectrogram — deferred; needs a spectrogram data model (FFT history over time) first
+- ⏸ ProMotion 120 Hz `TimelineView` for `.dancingBars` — deferred
 
-### Phase 5 — Editor-Grade Tooling
+### Phase 5 — Editor-Grade Tooling *(in progress)*
 
-- Region selection gesture
+- ✅ Region selection gesture — `selection:` binding plus `WaveformSelectionOptions`, with
+  draggable edges, snapping, and VoiceOver editing. Markers now also follow the viewport when
+  zoomed, which they did not before
 - RTL layout support
 - tvOS support — needs a focus-engine interaction model, since `DragGesture` and `MagnifyGesture`
   are both unavailable on the platform

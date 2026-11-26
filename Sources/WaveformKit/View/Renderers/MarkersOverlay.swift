@@ -10,6 +10,10 @@ import SwiftUI
 struct MarkersOverlay: View {
     let markers: [WaveformMarker]
     let duration: TimeInterval
+    /// The time span the linear styles' width covers — the viewport's visible range when
+    /// zoomed, `0...duration` otherwise.  Ignored by `.circular`, which always shows the whole
+    /// file.
+    let visibleRange: ClosedRange<TimeInterval>
     let style: WaveformStyle
 
     var body: some View {
@@ -27,23 +31,32 @@ struct MarkersOverlay: View {
     // MARK: - Linear
 
     private func drawLinear(context: GraphicsContext, size: CGSize) {
-        let widthPerSecond = size.width / CGFloat(duration)
+        let timeline = WaveformTimeline(visibleRange: visibleRange, width: size.width)
+        guard timeline.pointsPerSecond > 0 else { return }
         let dotSize: CGFloat = 8
         let topPad: CGFloat = dotSize + 2
 
         for m in markers {
-            let startX = clamp(CGFloat(m.time) * widthPerSecond, 0, size.width)
+            let rawStart = timeline.x(for: m.time)
+            let rawEnd = timeline.x(for: m.time + m.duration)
+            // While zoomed, skip markers outside the visible window instead of clamping them,
+            // which would pile every off-screen marker up against the edges.
+            guard rawEnd >= 0, rawStart <= size.width else { continue }
+            let startX = clamp(rawStart, 0, size.width)
 
             if m.isRegion {
-                let endX = clamp(CGFloat(m.time + m.duration) * widthPerSecond, 0, size.width)
+                let endX = clamp(rawEnd, 0, size.width)
                 let bandWidth = max(1, endX - startX)
                 let band = CGRect(x: startX, y: 0, width: bandWidth, height: size.height)
                 context.fill(Path(band), with: .color(m.color.opacity(0.22)))
 
-                var edge = Path()
-                edge.move(to: CGPoint(x: startX, y: 0))
-                edge.addLine(to: CGPoint(x: startX, y: size.height))
-                context.stroke(edge, with: .color(m.color), lineWidth: 1.5)
+                // The start stripe marks where the region begins; skip it when that is off screen.
+                if rawStart >= 0 {
+                    var edge = Path()
+                    edge.move(to: CGPoint(x: startX, y: 0))
+                    edge.addLine(to: CGPoint(x: startX, y: size.height))
+                    context.stroke(edge, with: .color(m.color), lineWidth: 1.5)
+                }
             } else {
                 var line = Path()
                 line.move(to: CGPoint(x: startX, y: topPad))
@@ -60,7 +73,7 @@ struct MarkersOverlay: View {
                 let labelX: CGFloat
                 let anchor: UnitPoint
                 if m.isRegion {
-                    let endX = clamp(CGFloat(m.time + m.duration) * widthPerSecond, 0, size.width)
+                    let endX = clamp(rawEnd, 0, size.width)
                     labelX = (startX + endX) / 2
                     anchor = .top
                 } else {

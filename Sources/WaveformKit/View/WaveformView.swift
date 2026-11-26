@@ -26,6 +26,8 @@ public struct WaveformView: View {
     private let markers: [WaveformMarker]
     private let viewportBinding: Binding<WaveformViewport>?
     private let zoomOptions: WaveformZoomOptions
+    private let selectionBinding: Binding<ClosedRange<TimeInterval>?>?
+    private let selectionOptions: WaveformSelectionOptions
     private let onSeek: ((TimeInterval) -> Void)?
     private let onMarkerTap: ((WaveformMarker) -> Void)?
 
@@ -48,6 +50,8 @@ public struct WaveformView: View {
         markers: [WaveformMarker] = [],
         viewport: Binding<WaveformViewport>? = nil,
         zoom: WaveformZoomOptions = WaveformZoomOptions(),
+        selection: Binding<ClosedRange<TimeInterval>?>? = nil,
+        selectionOptions: WaveformSelectionOptions = .default,
         onSeek: ((TimeInterval) -> Void)? = nil,
         onMarkerTap: ((WaveformMarker) -> Void)? = nil
     ) {
@@ -62,6 +66,8 @@ public struct WaveformView: View {
         self.markers        = markers
         self.viewportBinding = viewport
         self.zoomOptions    = zoom
+        self.selectionBinding = selection
+        self.selectionOptions = selectionOptions
         self.onSeek         = onSeek
         self.onMarkerTap    = onMarkerTap
     }
@@ -85,8 +91,20 @@ public struct WaveformView: View {
                 renderer(progressOverride: nil, forceShowsProgress: false)
                     .animation(.linear(duration: 0.05), value: currentTime)
             }
+            if let range = displayedSelection {
+                SelectionOverlay(
+                    selection: range,
+                    timeline: timeline(width: width),
+                    tint: selectionOptions.tint ?? colors.played
+                )
+            }
             if shouldRenderMarkers {
-                MarkersOverlay(markers: markers, duration: summary.duration, style: style)
+                MarkersOverlay(
+                    markers: markers,
+                    duration: summary.duration,
+                    visibleRange: timeline(width: width).visibleRange,
+                    style: style
+                )
             }
         }
         .frame(width: width, height: height)
@@ -122,9 +140,71 @@ public struct WaveformView: View {
                 break
             }
         }
+        .accessibilityActions {
+            if selectionEnabled {
+                if selectionBinding?.wrappedValue == nil {
+                    Button("Select from playhead") { selectFromPlayhead() }
+                } else {
+                    Button("Clear selection") { selectionBinding?.wrappedValue = nil }
+                }
+            }
+        }
         .accessibilityChildren {
             markerAccessibilityChildren
+            selectionAccessibilityChildren
         }
+    }
+
+    /// Two adjustable elements — the selection's start and end — so VoiceOver users can edit a
+    /// selection by swiping up and down, one `accessibilityStep` at a time.
+    @ViewBuilder
+    private var selectionAccessibilityChildren: some View {
+        if selectionEnabled, let current = selectionBinding?.wrappedValue {
+            GeometryReader { geo in
+                let line = timeline(width: geo.size.width)
+                ForEach([SelectionEdge.start, .end], id: \.self) { edge in
+                    let time = edge == .start ? current.lowerBound : current.upperBound
+                    Color.clear
+                        .frame(width: 44, height: 44)
+                        .position(x: min(geo.size.width, max(0, line.x(for: time))), y: geo.size.height / 2)
+                        .accessibilityElement()
+                        .accessibilityLabel(edge == .start ? "Selection start" : "Selection end")
+                        .accessibilityValue(Self.formatTime(time))
+                        .accessibilityAdjustableAction { direction in
+                            let step = selectionOptions.accessibilityStep(duration: summary.duration)
+                            let delta: TimeInterval
+                            switch direction {
+                            case .increment: delta = step
+                            case .decrement: delta = -step
+                            @unknown default: return
+                            }
+                            moveSelectionEdge(edge, by: delta)
+                        }
+                }
+            }
+        }
+    }
+
+    /// VoiceOver's way in: a selection from the playhead, a tenth of the file long (at least the
+    /// minimum length), shifted back if it would run past the end.
+    private func selectFromPlayhead() {
+        let length = max(selectionOptions.minimumLength, summary.duration * 0.1)
+        let start = max(0, min(currentTime, summary.duration - length))
+        selectionBinding?.wrappedValue = selectionOptions.range(
+            from: start, to: start + length, duration: summary.duration
+        )
+    }
+
+    /// Nudge one edge, refusing any move that would leave the selection shorter than the minimum.
+    private func moveSelectionEdge(_ edge: SelectionEdge, by delta: TimeInterval) {
+        guard let current = selectionBinding?.wrappedValue else { return }
+        let moved = edge == .start
+            ? (current.lowerBound + delta, current.upperBound)
+            : (current.lowerBound, current.upperBound + delta)
+        guard moved.0 < moved.1,
+              let next = selectionOptions.range(from: moved.0, to: moved.1, duration: summary.duration)
+        else { return }
+        selectionBinding?.wrappedValue = next
     }
 
     /// Invisible accessibility-only overlay that exposes each `WaveformMarker` as a focusable
@@ -134,7 +214,7 @@ public struct WaveformView: View {
     private var markerAccessibilityChildren: some View {
         if !markers.isEmpty, summary.duration > 0 {
             GeometryReader { geo in
-                ForEach(markers) { marker in
+                ForEach(markersOnScreen(width: geo.size.width)) { marker in
                     let position = markerAccessibilityPosition(marker, in: geo.size)
                     Color.clear
                         .frame(width: 30, height: 30)
@@ -162,9 +242,22 @@ public struct WaveformView: View {
             let angle: CGFloat = -.pi / 2 + progressFrac * 2 * .pi
             return CGPoint(x: center.x + cos(angle) * outerR, y: center.y + sin(angle) * outerR)
         }
-        let centerTime = marker.time + marker.duration / 2
-        let x = CGFloat(centerTime / summary.duration) * size.width
-        return CGPoint(x: x, y: size.height / 2)
+        // Centre of the part of the marker that is on screen, so a zoomed region whose middle is
+        // off screen is still reachable by touch.
+        let line = timeline(width: size.width)
+        let lo = max(marker.time, line.visibleRange.lowerBound)
+        let hi = min(marker.time + marker.duration, line.visibleRange.upperBound)
+        let x = line.x(for: (lo + hi) / 2)
+        return CGPoint(x: min(size.width, max(0, x)), y: size.height / 2)
+    }
+
+    /// Markers that overlap the visible range.  All of them unless zoomed, or on `.circular`.
+    private func markersOnScreen(width: CGFloat) -> [WaveformMarker] {
+        if case .circular = style { return markers }
+        let visible = timeline(width: width).visibleRange
+        return markers.filter {
+            $0.time <= visible.upperBound && $0.time + $0.duration >= visible.lowerBound
+        }
     }
 
     // The static helpers below are pure functions over their arguments.  `View` is a
@@ -191,11 +284,14 @@ public struct WaveformView: View {
 
     private var accessibilityLabelText: String {
         let base = summary.duration > 0 ? "Audio waveform" : "Audio waveform, no audio loaded"
+        var parts = [base]
         if !markers.isEmpty {
-            let suffix = markers.count == 1 ? "1 marker" : "\(markers.count) markers"
-            return "\(base), \(suffix)"
+            parts.append(markers.count == 1 ? "1 marker" : "\(markers.count) markers")
         }
-        return base
+        if selectionEnabled, let range = selectionBinding?.wrappedValue {
+            parts.append("selected \(Self.formatTime(range.lowerBound)) to \(Self.formatTime(range.upperBound))")
+        }
+        return parts.joined(separator: ", ")
     }
 
     private var accessibilityValueText: String {
@@ -382,10 +478,12 @@ public struct WaveformView: View {
     ///
     /// 1. Predominantly vertical, and `yieldsToVerticalScroll` is set → abandon, let the scroll
     ///    view have it.
-    /// 2. Started on a marker and never moved → `onMarkerTap`.
-    /// 3. Moved past `dragThreshold` → pan (`.panWhenZoomed` while zoomed) or seek.
-    /// 4. Never moved → a tap, resolved on release so the second tap of a double-tap can reset
-    ///    the zoom instead of seeking.
+    /// 2. Started on a selection edge → drag that edge.
+    /// 3. Started on a marker and never moved → `onMarkerTap`.
+    /// 4. Moved past `dragThreshold` → start a selection if its activation is met (a long-press
+    ///    hold, or any drag under `.drag`); otherwise pan (`.panWhenZoomed` while zoomed) or seek.
+    /// 5. Never moved → a tap, resolved on release so the second tap of a double-tap can reset
+    ///    the zoom instead of seeking.  A tap outside the selection may also clear it.
     private func interactionGesture(size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
@@ -393,19 +491,29 @@ public struct WaveformView: View {
 
                 let travelled = hypot(value.translation.width, value.translation.height)
 
-                // Resolve the marker hit-test first.  It claims nothing and costs one pass over
-                // `markers`, and it has to happen before the scroll gate below: a tap never
-                // travels far enough to clear that gate, so testing later would lose every
-                // marker tap in `.inScrollView` mode.
+                // Resolve the selection-edge and marker hit-tests first.  They claim nothing and
+                // cost one pass each, and they have to happen before the scroll gate below: a
+                // tap never travels far enough to clear that gate, so testing later would lose
+                // every marker tap in `.inScrollView` mode.
                 if !dragState.checkedFirstTouch {
                     dragState.checkedFirstTouch = true
-                    if onMarkerTap != nil, !markers.isEmpty {
+                    dragState.touchDownTime = value.time
+                    dragState.originalSelection = selectionBinding?.wrappedValue
+                    // Selection handles sit on top of markers, so they win a shared touch.
+                    if selectionEnabled, let current = selectionBinding?.wrappedValue,
+                       let edge = SelectionEdge.hitTest(
+                           x: value.startLocation.x, selection: current, timeline: timeline(width: size.width)
+                       ) {
+                        dragState.isSelecting = true
+                        dragState.selectionAnchor = edge == .start ? current.upperBound : current.lowerBound
+                    } else if onMarkerTap != nil, !markers.isEmpty {
                         dragState.startedOnMarker = Self.hitTestMarker(
                             markers,
                             at: value.startLocation,
                             in: size,
                             duration: summary.duration,
-                            style: style
+                            style: style,
+                            visibleRange: timeline(width: size.width).visibleRange
                         )
                     }
                 }
@@ -429,6 +537,27 @@ public struct WaveformView: View {
                 // A stationary touch stays a tap candidate and resolves in `onEnded`.
                 guard dragState.hasDragged else { return }
 
+                // The first real movement decides, once, whether this drag makes a new selection.
+                // Deciding at the first movement is what makes long-press work: the hold is the
+                // time between touch-down and that movement.
+                if !dragState.decidedSelection {
+                    dragState.decidedSelection = true
+                    if !dragState.isSelecting, selectionEnabled,
+                       selectionOptions.activatesSelection(
+                           touchDown: dragState.touchDownTime ?? value.time, firstMove: value.time
+                       ) {
+                        dragState.isSelecting = true
+                        dragState.selectionAnchor = timeline(width: size.width)
+                            .time(forX: value.startLocation.x)
+                        dragState.startedOnMarker = nil
+                    }
+                }
+
+                if dragState.isSelecting {
+                    updateSelection(to: value.location, size: size)
+                    return
+                }
+
                 if dragPans {
                     applyPan(totalTranslation: value.translation.width, size: size)
                 } else {
@@ -440,6 +569,16 @@ public struct WaveformView: View {
                 dragState = DragState()
 
                 guard summary.duration > 0, size.width > 0, !state.rejected else { return }
+
+                if state.isSelecting {
+                    // Touching a handle without moving it changes nothing — and does not seek.
+                    guard state.hasDragged, let anchor = state.selectionAnchor else { return }
+                    let t = timeline(width: size.width).time(forX: value.location.x)
+                    // Too short to keep: fall back to whatever was selected before this gesture.
+                    let committed = selectionOptions.range(from: anchor, to: t, duration: summary.duration)
+                    selectionBinding?.wrappedValue = committed ?? state.originalSelection
+                    return
+                }
 
                 if let marker = state.startedOnMarker, !state.hasDragged {
                     onMarkerTap?(marker)
@@ -455,8 +594,49 @@ public struct WaveformView: View {
                     return
                 }
                 tapState = TapState(lastTapTime: value.time, lastTapLocation: value.location)
+                if selectionEnabled, selectionOptions.clearsOnTapOutside,
+                   let current = selectionBinding?.wrappedValue,
+                   !current.contains(timeline(width: size.width).time(forX: value.location.x)) {
+                    selectionBinding?.wrappedValue = nil
+                }
                 applySeek(at: value.location, size: size)
             }
+    }
+
+    // MARK: - Selection
+
+    /// Selection needs a binding to write to and a linear layout to map time onto.
+    private var selectionEnabled: Bool {
+        guard selectionBinding != nil, summary.duration > 0 else { return false }
+        if case .circular = style { return false }
+        return true
+    }
+
+    /// The range to draw: the in-progress one under the finger, else the bound value.
+    private var displayedSelection: ClosedRange<TimeInterval>? {
+        guard selectionEnabled else { return nil }
+        if dragState.isSelecting, let live = dragState.liveSelection { return live }
+        return selectionBinding?.wrappedValue
+    }
+
+    private func timeline(width: CGFloat) -> WaveformTimeline {
+        WaveformTimeline(
+            duration: summary.duration, viewport: viewportBinding?.wrappedValue, width: width
+        )
+    }
+
+    /// Move the free end of an in-progress selection to the finger.  The minimum length is not
+    /// enforced here — a selection starts at zero length — only when the finger lifts.
+    private func updateSelection(to location: CGPoint, size: CGSize) {
+        guard let anchor = dragState.selectionAnchor else { return }
+        let t = timeline(width: size.width).time(forX: location.x)
+        let live = selectionOptions.range(
+            from: anchor, to: t, duration: summary.duration, enforcingMinimum: false
+        )
+        dragState.liveSelection = live
+        if selectionOptions.updatesWhileDragging, let live {
+            selectionBinding?.wrappedValue = live
+        }
     }
 
     /// Pan the viewport by the movement since the previous callback.
@@ -531,27 +711,30 @@ public struct WaveformView: View {
 
     /// Returns the marker nearest to `location` within `hitRadius` points (measured as horizontal
     /// distance for linear styles, arc length for `.circular`), or `nil` if none qualify. Region
-    /// markers report a distance of 0 when the touch is inside their span.
+    /// markers report a distance of 0 when the touch is inside their span.  `visibleRange` is the
+    /// span the width covers when zoomed; `nil` means the whole file.
     nonisolated static func hitTestMarker(
         _ markers: [WaveformMarker],
         at location: CGPoint,
         in size: CGSize,
         duration: TimeInterval,
         style: WaveformStyle,
+        visibleRange: ClosedRange<TimeInterval>? = nil,
         hitRadius: CGFloat = 14
     ) -> WaveformMarker? {
         guard duration > 0, size.width > 0, !markers.isEmpty else { return nil }
         if case .circular = style {
             return hitTestCircular(markers, at: location, in: size, duration: duration, hitRadius: hitRadius)
         }
-        let widthPerSecond = size.width / CGFloat(duration)
+        // Map through the visible range so a zoomed view hit-tests where the markers are drawn.
+        let timeline = WaveformTimeline(visibleRange: visibleRange ?? 0...duration, width: size.width)
         var best: WaveformMarker?
         var bestDistance: CGFloat = .infinity
         for m in markers {
-            let startX = CGFloat(m.time) * widthPerSecond
+            let startX = timeline.x(for: m.time)
             let dx: CGFloat
             if m.isRegion {
-                let endX = startX + CGFloat(m.duration) * widthPerSecond
+                let endX = timeline.x(for: m.time + m.duration)
                 if location.x >= startX, location.x <= endX {
                     dx = 0
                 } else {
@@ -696,6 +879,19 @@ private struct DragState {
     var rejected: Bool = false
     var isPanning: Bool = false
     var lastPanTranslation: CGFloat = 0
+
+    // Selection
+    var touchDownTime: Date?
+    /// The selection when the touch went down, restored if the gesture ends too short.
+    var originalSelection: ClosedRange<TimeInterval>?
+    /// Set once the first movement has been judged for selection activation.
+    var decidedSelection: Bool = false
+    /// This touch is creating a selection or dragging one of its edges.
+    var isSelecting: Bool = false
+    /// The end that stays put while the other follows the finger.
+    var selectionAnchor: TimeInterval?
+    /// The range under the finger, drawn even when the binding is only written on release.
+    var liveSelection: ClosedRange<TimeInterval>?
 }
 
 /// Timestamp and location of the last completed tap, kept across gestures to recognise a
@@ -779,6 +975,8 @@ extension WaveformView {
         markers: [WaveformMarker] = [],
         viewport: Binding<WaveformViewport>? = nil,
         zoom: WaveformZoomOptions = WaveformZoomOptions(),
+        selection: Binding<ClosedRange<TimeInterval>?>? = nil,
+        selectionOptions: WaveformSelectionOptions = .default,
         onSeek: ((TimeInterval) -> Void)? = nil,
         onMarkerTap: ((WaveformMarker) -> Void)? = nil
     ) {
@@ -790,6 +988,7 @@ extension WaveformView {
                 style: style, movement: movement, resampleMode: resampleMode,
                 colors: colors,
                 markers: markers, viewport: viewport, zoom: zoom,
+                selection: selection, selectionOptions: selectionOptions,
                 onSeek: onSeek, onMarkerTap: onMarkerTap
             )
         default:

@@ -1865,3 +1865,142 @@ extension WaveformKitTests {
         XCTAssertNotNil(MetalBarsResources.make(), "Shader compilation or pipeline creation failed")
     }
 }
+
+// MARK: - Region selection (Phase 5)
+
+extension WaveformKitTests {
+
+    // MARK: Options
+
+    func testSelectionOptionsDefaults() {
+        let o = WaveformSelectionOptions()
+        XCTAssertEqual(o.activation, .longPress(holdDuration: 0.4))
+        XCTAssertEqual(o.minimumLength, 0.1)
+        XCTAssertNil(o.snapInterval)
+        XCTAssertTrue(o.clearsOnTapOutside)
+        XCTAssertTrue(o.updatesWhileDragging)
+        XCTAssertEqual(WaveformSelectionOptions.editor.activation, .drag)
+    }
+
+    func testSelectionOptionsSanitiseInput() {
+        let o = WaveformSelectionOptions(minimumLength: -3, snapInterval: 0)
+        XCTAssertEqual(o.minimumLength, 0)
+        XCTAssertNil(o.snapInterval, "A zero snap interval would divide by zero")
+        XCTAssertNil(WaveformSelectionOptions(snapInterval: -1).snapInterval)
+        XCTAssertNil(WaveformSelectionOptions(snapInterval: .infinity).snapInterval)
+    }
+
+    func testSelectionRangeOrdersAndClamps() {
+        let o = WaveformSelectionOptions()
+        XCTAssertEqual(o.range(from: 30, to: 10, duration: 60), 10...30, "Either drag direction works")
+        XCTAssertEqual(o.range(from: -5, to: 90, duration: 60), 0...60, "Clamped to the file")
+        XCTAssertNil(o.range(from: 1, to: 2, duration: 0), "Nothing to select in an empty file")
+    }
+
+    func testSelectionRangeEnforcesMinimumLength() {
+        let o = WaveformSelectionOptions(minimumLength: 0.5)
+        XCTAssertNil(o.range(from: 10, to: 10.2, duration: 60))
+        XCTAssertEqual(o.range(from: 10, to: 10.2, duration: 60, enforcingMinimum: false), 10...10.2,
+                       "The in-progress range under the finger may be tiny")
+        XCTAssertNil(WaveformSelectionOptions(minimumLength: 0).range(from: 5, to: 5, duration: 60),
+                     "A zero-length selection is never kept, even with no minimum")
+    }
+
+    func testSelectionSnapping() {
+        let o = WaveformSelectionOptions(snapInterval: 0.5)
+        XCTAssertEqual(o.snapped(10.26, duration: 60), 10.5)
+        XCTAssertEqual(o.snapped(10.24, duration: 60), 10.0)
+        XCTAssertEqual(o.snapped(59.9, duration: 59.8), 59.8, "Snapping never passes the end")
+        XCTAssertEqual(o.snapped(.nan, duration: 60), 0)
+        XCTAssertEqual(o.range(from: 1.1, to: 3.9, duration: 60), 1.0...4.0)
+    }
+
+    func testSelectionActivation() {
+        let down = Date(timeIntervalSinceReferenceDate: 100)
+        let longPress = WaveformSelectionOptions(activation: .longPress(holdDuration: 0.4))
+        XCTAssertFalse(longPress.activatesSelection(touchDown: down, firstMove: down.addingTimeInterval(0.1)),
+                       "A drag that starts straight away still seeks")
+        XCTAssertTrue(longPress.activatesSelection(touchDown: down, firstMove: down.addingTimeInterval(0.4)))
+        XCTAssertTrue(WaveformSelectionOptions.editor.activatesSelection(touchDown: down, firstMove: down))
+    }
+
+    func testSelectionAccessibilityStep() {
+        XCTAssertEqual(WaveformSelectionOptions(snapInterval: 0.25).accessibilityStep(duration: 600), 0.25)
+        XCTAssertEqual(WaveformSelectionOptions().accessibilityStep(duration: 600), 6, accuracy: 1e-9)
+        XCTAssertEqual(WaveformSelectionOptions(minimumLength: 0.5).accessibilityStep(duration: 10), 0.5,
+                       "Never smaller than the minimum length")
+    }
+
+    // MARK: Timeline mapping
+
+    func testTimelineWithoutViewportCoversWholeFile() {
+        let t = WaveformTimeline(duration: 60, viewport: nil, width: 300)
+        XCTAssertEqual(t.visibleRange, 0...60)
+        XCTAssertEqual(t.x(for: 30), 150, accuracy: 1e-9)
+        XCTAssertEqual(t.time(forX: 75), 15, accuracy: 1e-9)
+    }
+
+    func testTimelineFollowsZoomedViewport() {
+        var vp = WaveformViewport(duration: 60)
+        vp.visibleRange = 20...30
+        let t = WaveformTimeline(duration: 60, viewport: vp, width: 200)
+        XCTAssertEqual(t.x(for: 25), 100, accuracy: 1e-9)
+        XCTAssertEqual(t.time(forX: 0), 20, accuracy: 1e-9)
+        XCTAssertLessThan(t.x(for: 10), 0, "Times before the window land off the leading edge")
+        XCTAssertEqual(t.time(forX: 999), 30, accuracy: 1e-9, "Positions are clamped to the window")
+    }
+
+    func testTimelineHandlesEmptyInput() {
+        let t = WaveformTimeline(duration: 0, viewport: nil, width: 300)
+        XCTAssertEqual(t.pointsPerSecond, 0)
+        XCTAssertEqual(t.x(for: 5), 0)
+        XCTAssertEqual(WaveformTimeline(duration: 60, viewport: nil, width: 0).time(forX: 10), 0)
+    }
+
+    // MARK: Edge hit-testing
+
+    func testSelectionEdgeHitTest() {
+        let t = WaveformTimeline(duration: 60, viewport: nil, width: 600)   // 10 pt per second
+        let sel: ClosedRange<TimeInterval> = 10...30                        // x = 100 ... 300
+        XCTAssertEqual(SelectionEdge.hitTest(x: 110, selection: sel, timeline: t), .start)
+        XCTAssertEqual(SelectionEdge.hitTest(x: 285, selection: sel, timeline: t), .end)
+        XCTAssertNil(SelectionEdge.hitTest(x: 200, selection: sel, timeline: t),
+                     "The middle of a selection is not a handle")
+        XCTAssertNil(SelectionEdge.hitTest(x: 123, selection: sel, timeline: t),
+                     "Outside the 44-point target")
+    }
+
+    func testSelectionEdgeHitTestPrefersNearerEdgeWhenTargetsOverlap() {
+        let t = WaveformTimeline(duration: 60, viewport: nil, width: 600)
+        let narrow: ClosedRange<TimeInterval> = 10...12                     // x = 100 ... 120
+        XCTAssertEqual(SelectionEdge.hitTest(x: 104, selection: narrow, timeline: t), .start)
+        XCTAssertEqual(SelectionEdge.hitTest(x: 117, selection: narrow, timeline: t), .end)
+    }
+
+    // MARK: Markers while zoomed (fix shipped with selection)
+
+    func testMarkerHitTestFollowsZoomedViewport() {
+        // 60 s on 600 pt.  Zoomed to 20...30, a marker at 25 s is drawn at x = 300, not x = 250.
+        let m = WaveformMarker(time: 25, color: .red)
+        let size = CGSize(width: 600, height: 60)
+        let zoomedHit = WaveformView.hitTestMarker(
+            [m], at: CGPoint(x: 300, y: 30), in: size, duration: 60, style: .bars(),
+            visibleRange: 20...30
+        )
+        XCTAssertEqual(zoomedHit?.id, m.id)
+        let staleHit = WaveformView.hitTestMarker(
+            [m], at: CGPoint(x: 250, y: 30), in: size, duration: 60, style: .bars(),
+            visibleRange: 20...30
+        )
+        XCTAssertNil(staleHit, "The full-duration position must no longer hit while zoomed")
+    }
+
+    func testMarkerHitTestDefaultsToWholeFile() {
+        let m = WaveformMarker(time: 25, color: .red)
+        let hit = WaveformView.hitTestMarker(
+            [m], at: CGPoint(x: 250, y: 30), in: CGSize(width: 600, height: 60),
+            duration: 60, style: .bars()
+        )
+        XCTAssertEqual(hit?.id, m.id)
+    }
+}

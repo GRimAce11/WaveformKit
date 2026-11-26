@@ -36,6 +36,10 @@ struct HomeScreen: View {
              subtitle: "Programmatic zoom · visible range",
              icon: "magnifyingglass",
              iconColor: .teal),
+        Demo(title: "Selection",
+             subtitle: "Select a region · drag edges · snap",
+             icon: "selection.pin.in.out",
+             iconColor: .orange),
     ]
 
     /// Screen to open directly, from a `-demoScreen <title>` launch argument.
@@ -81,6 +85,7 @@ struct HomeScreen: View {
         case "Microphone":       MicrophoneScreen()
         case "Custom Renderer":  CustomRendererScreen()
         case "Viewport":         ViewportScreen()
+        case "Selection":        SelectionScreen()
         default:                 Text("Coming soon")
         }
     }
