@@ -9,7 +9,7 @@ A SwiftUI waveform visualization framework for audio apps. Handles decoding, cac
 ![Swift](https://img.shields.io/badge/Swift-6.0+-orange?logo=swift)
 ![Platforms](https://img.shields.io/badge/Platforms-iOS%2017%20%7C%20macOS%2014%20%7C%20visionOS%201-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
-![Tests](https://img.shields.io/badge/Tests-178%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/Tests-186%20passing-brightgreen)
 
 ---
 

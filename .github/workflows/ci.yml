@@ -15,7 +15,7 @@ jobs:
     name: Build & test (macOS)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Show toolchain
         run: |
@@ -32,7 +32,7 @@ jobs:
     name: Swift 6 mode, warnings as errors
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Show toolchain
         run: swift --version
@@ -54,7 +54,7 @@ jobs:
       matrix:
         platform: [iOS Simulator, visionOS Simulator]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Show toolchain
         run: xcodebuild -version
@@ -78,7 +78,7 @@ jobs:
     name: Build documentation
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Catches broken DocC symbol links in the catalog before they reach the published docs
       # on Swift Package Index.
