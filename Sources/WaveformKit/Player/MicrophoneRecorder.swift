@@ -149,13 +149,19 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
             throw MicrophoneRecorderError.permissionDenied
         }
 
-        #if os(iOS) || os(tvOS) || os(visionOS)
+        #if os(iOS) || os(tvOS) || os(visionOS) || os(watchOS)
         do {
             let session = AVAudioSession.sharedInstance()
+            #if os(watchOS)
+            // `.defaultToSpeaker` is unavailable on watchOS and `.allowBluetoothHFP` needs
+            // watchOS 11, so the watch takes the system's default routing.
+            try session.setCategory(.playAndRecord, mode: .measurement, options: [])
+            #else
             try session.setCategory(
                 .playAndRecord, mode: .measurement,
                 options: [.defaultToSpeaker, Self.allowBluetoothHFP]
             )
+            #endif
             try session.setActive(true)
         } catch {
             let mapped = MicrophoneRecorderError.audioSessionFailed(underlying: error as NSError)
@@ -258,7 +264,7 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
             channelCount: summary.channelCount
         )
 
-        #if os(iOS) || os(tvOS) || os(visionOS)
+        #if os(iOS) || os(tvOS) || os(visionOS) || os(watchOS)
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
         #endif
     }
@@ -266,7 +272,7 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
     // MARK: - System event observers
 
     private func installSystemObservers() {
-        #if os(iOS) || os(tvOS) || os(visionOS)
+        #if os(iOS) || os(tvOS) || os(visionOS) || os(watchOS)
         // Tokens are appended, so guard against a second install leaking the first pair.
         guard teardown.observers.isEmpty else { return }
         let center = NotificationCenter.default
@@ -301,7 +307,7 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
         teardown.removeObservers()
     }
 
-    #if os(iOS) || os(tvOS) || os(visionOS)
+    #if os(iOS) || os(tvOS) || os(visionOS) || os(watchOS)
     private func handleInterruption(rawType: UInt?, rawOptions: UInt?) {
         guard isRecording,
               let rawType,
@@ -473,8 +479,8 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
     }
 
     private static func requestPermission() async -> Bool {
-        #if os(iOS) || os(tvOS) || os(visionOS)
-        if #available(iOS 17, tvOS 17, visionOS 1, *) {
+        #if os(iOS) || os(tvOS) || os(visionOS) || os(watchOS)
+        if #available(iOS 17, tvOS 17, visionOS 1, watchOS 10, *) {
             return await AVAudioApplication.requestRecordPermission()
         } else {
             return await withCheckedContinuation { cont in

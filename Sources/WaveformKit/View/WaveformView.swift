@@ -944,10 +944,10 @@ struct TapState {
     var lastTapLocation: CGPoint = .zero
 }
 
-/// Attaches the pinch-zoom gesture.
+/// Attaches the pinch-zoom gesture, or on watchOS the Digital Crown.
 ///
-/// Split into its own modifier so the whole thing compiles out on tvOS, where `MagnifyGesture`
-/// does not exist, without littering `WaveformView.body` with `#if`.
+/// Split into its own modifier so the platform differences stay out of `WaveformView.body`:
+/// `MagnifyGesture` does not exist on tvOS or watchOS, and a watch has no pinch to give it.
 private struct WaveformMagnifyModifier: ViewModifier {
     let viewport: Binding<WaveformViewport>?
     let options: WaveformZoomOptions
@@ -958,15 +958,60 @@ private struct WaveformMagnifyModifier: ViewModifier {
     /// Zoom factor when the current pinch began.  `nil` between gestures.
     @State private var baseZoomFactor: Double?
 
+    #if os(watchOS)
+    /// Digital Crown position, in `options.crownRange`.
+    @State private var crownValue: Double = 0
+    #endif
+
     func body(content: Content) -> some View {
         #if os(tvOS)
         content
+        #elseif os(watchOS)
+        // In a scrolling list the crown belongs to the list: since watchOS 10 it is the
+        // primary navigation input, so a row must not take it over.
+        if isEnabled, let viewport, options.maxZoomFactor > 1, !options.yieldsToVerticalScroll {
+            crownZoom(content, viewport: viewport)
+        } else {
+            content
+        }
         #else
         content.simultaneousGesture(magnify, including: isEnabled ? .all : .subviews)
         #endif
     }
 
-    #if !os(tvOS)
+    #if os(watchOS)
+    /// Turning the crown zooms about the centre of the visible range.  The waveform takes the
+    /// crown once it has focus, which a tap on it gives.
+    private func crownZoom(_ content: Content, viewport: Binding<WaveformViewport>) -> some View {
+        let range = options.crownRange
+        return content
+            .focusable()
+            .digitalCrownRotation(
+                $crownValue,
+                from: range.lowerBound,
+                through: range.upperBound,
+                sensitivity: .low,
+                isContinuous: false,
+                isHapticFeedbackEnabled: true
+            )
+            .onChange(of: crownValue) { _, value in
+                let target = options.zoomFactor(crownValue: value)
+                var vp = viewport.wrappedValue
+                guard abs(vp.zoomFactor - target) > 0.001 else { return }
+                vp.zoom(to: target, anchor: 0.5, minSpan: options.minVisibleDuration)
+                viewport.wrappedValue = vp
+            }
+            // Follow zoom changes that did not come from the crown — a double-tap reset, the
+            // app setting the viewport, or `minVisibleDuration` stopping the zoom short — so the
+            // next turn continues from where the waveform actually is.
+            .onChange(of: viewport.wrappedValue.zoomFactor, initial: true) { _, factor in
+                let value = options.crownValue(zoomFactor: factor)
+                if abs(value - crownValue) > 0.001 { crownValue = value }
+            }
+    }
+    #endif
+
+    #if !os(tvOS) && !os(watchOS)
     private var magnify: some Gesture {
         MagnifyGesture()
             .onChanged { value in

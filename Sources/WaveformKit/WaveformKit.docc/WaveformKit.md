@@ -53,6 +53,7 @@ WaveformView(loader: loader, currentTime: player.currentTime, onSeek: { player.s
 - <doc:ZoomAndPan>
 - <doc:RegionSelection>
 - <doc:RightToLeft>
+- <doc:AppleWatch>
 - ``WaveformViewport``
 - ``WaveformZoomOptions``
 - ``WaveformSummaryPyramid``

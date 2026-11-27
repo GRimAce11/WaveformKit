@@ -105,7 +105,7 @@ public final class AVAudioEnginePlayer: WaveformPlayerAdapter, AmplitudeTap {
     public func play() {
         guard !isPlaying else { return }
         do {
-            #if os(iOS) || os(tvOS) || os(visionOS)
+            #if os(iOS) || os(tvOS) || os(visionOS) || os(watchOS)
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
             try AVAudioSession.sharedInstance().setActive(true)
             #endif
@@ -229,7 +229,7 @@ public final class AVAudioEnginePlayer: WaveformPlayerAdapter, AmplitudeTap {
     // MARK: - System event observers
 
     private func installSystemObservers() {
-        #if os(iOS) || os(tvOS) || os(visionOS)
+        #if os(iOS) || os(tvOS) || os(visionOS) || os(watchOS)
         guard teardown.observers.isEmpty else { return }
         let center = NotificationCenter.default
         teardown.observers.append(center.addObserver(
@@ -263,7 +263,7 @@ public final class AVAudioEnginePlayer: WaveformPlayerAdapter, AmplitudeTap {
         teardown.removeObservers()
     }
 
-    #if os(iOS) || os(tvOS) || os(visionOS)
+    #if os(iOS) || os(tvOS) || os(visionOS) || os(watchOS)
     private func handleInterruption(rawType: UInt?, rawOptions: UInt?) {
         guard let rawType,
               let type = AVAudioSession.InterruptionType(rawValue: rawType) else { return }

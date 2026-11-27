@@ -7,7 +7,7 @@ A SwiftUI waveform visualization framework for audio apps. Handles decoding, cac
 </p>
 
 ![Swift](https://img.shields.io/badge/Swift-6.0+-orange?logo=swift)
-![Platforms](https://img.shields.io/badge/Platforms-iOS%2017%20%7C%20macOS%2014%20%7C%20visionOS%201-blue)
+![Platforms](https://img.shields.io/badge/Platforms-iOS%2017%20%7C%20macOS%2014%20%7C%20visionOS%201%20%7C%20watchOS%2010-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![Tests](https://img.shields.io/badge/Tests-186%20passing-brightgreen)
 
@@ -39,6 +39,7 @@ Key design decisions that differentiate it:
 - Right-to-left support: in Arabic and Hebrew layouts time runs right to left, as Apple's HIG asks of progress controls
 - Multi-resolution summaries (`WaveformSummaryPyramid`), so zooming in reveals real detail
 - Opt-in Metal backend for timelines with thousands of bars
+- watchOS: decoding, playback, recording, and Digital Crown zoom on Apple Watch
 - Seek gestures on all styles — linear drag on bar/line/dot styles, angular drag on circular
 - Markers and region overlays with tap callbacks, VoiceOver children, and circular-style support
 - Live microphone capture (`MicrophoneRecorder`) with bounded memory and interruption handling
@@ -49,14 +50,14 @@ Key design decisions that differentiate it:
 - VoiceOver: adjustable element with `X:XX of Y:YY` value; per-marker accessibility children
 - `WaveformView.snapshot(...)` → `CGImage` for thumbnails and share sheets
 - Peak- or mean-pooled resampling (`WaveformResampleMode`) — transients survive a low bar count
-- Zero external dependencies — AVFoundation, MediaToolbox, Accelerate only
+- Zero external dependencies — AVFoundation, MediaToolbox (not on watchOS), Accelerate only
 - DocC documentation hosted on Swift Package Index
 
 ---
 
 ## Requirements
 
-- iOS 17.0+ / macOS 14.0+ / visionOS 1.0+
+- iOS 17.0+ / macOS 14.0+ / visionOS 1.0+ / watchOS 10.0+
 - Swift 6.0+ / Xcode 16+
 
 The package builds under the **Swift 6 language mode** with complete concurrency checking and no
@@ -554,6 +555,28 @@ WaveformView(summary: summary, currentTime: t)
 every language. `WaveformView.snapshot` has no app environment to read, so pass
 `layoutDirection: .rightToLeft` when rendering one for an RTL UI.
 
+## Apple Watch
+
+WaveformKit builds for watchOS 10 and later. The same `WaveformView`, `WaveformLoader`,
+`WaveformCache`, `AVAudioEnginePlayer`, `AVAudioPlayerAdapter`, `AVPlayerAdapter` and
+`MicrophoneRecorder` code works there, with these differences:
+
+- **Zoom uses the Digital Crown.** There is no pinch on a watch, so once the waveform has focus
+  (tap it), turning the crown zooms about the centre of the visible range. Each step doubles or
+  halves the zoom, up to `maxZoomFactor`, with the system's crown haptics. Double-tap still
+  resets. With `WaveformZoomOptions.inScrollView` the waveform leaves the crown to the list, since
+  watchOS uses it to scroll. Apple asks that crown interactions also have a touch equivalent, so
+  if zooming in matters to your app, add zoom buttons that set the `viewport` binding.
+- **Decoding uses `AVAudioFile`.** `AVAssetReader` does not exist on watchOS. Audio files (WAV,
+  AIFF, CAF, M4A, MP3 and the like) decode to the same bars and pyramid as on iOS; the audio track
+  of a movie file throws `AudioDecoderError.readerInitFailed`.
+- **No `AVPlayerAmplitudeTap`.** MediaToolbox, which provides `MTAudioProcessingTap`, is not on
+  watchOS. For FFT bands on the watch, play local files with `AVAudioEnginePlayer`.
+- **Bars always draw with `Canvas`.** MetalKit is not on watchOS, so
+  `waveformRenderingBackend(.metal)` has no effect there.
+- **Recording** needs `NSMicrophoneUsageDescription` in the watch app's Info.plist, as on iOS.
+  The session uses `.playAndRecord` with the system's default routing.
+
 ---
 
 ## Players
@@ -850,6 +873,7 @@ WaveformColors(
 - **Exotic PCM formats** — the audio tap handles `Float32` and `Int16`. `Int24`, `Int32`, and big-endian variants are skipped (amplitude and bands read 0).
 - **iOS 17 / macOS 14 floor** — `@Observable` requires iOS 17+. An iOS 16 backport is on the roadmap.
 - **Swift 6 toolchain required** — `Package.swift` uses `swift-tools-version: 6.0`, so Xcode 15 can no longer resolve the package. The language *mode* is still selectable; the toolchain is not.
+- **watchOS differences** — no `AVPlayerAmplitudeTap`, no Metal backend, and movie files do not decode; zoom is on the Digital Crown rather than a pinch. See [Apple Watch](#apple-watch).
 - **No tvOS** — SwiftUI marks `DragGesture` unavailable on tvOS, so seeking, panning, marker taps, and double-tap-to-reset cannot compile there. Everything else in the package is tvOS-clean; support needs a focus-engine interaction model, which is Phase 5.
 - **Long recordings** — `MicrophoneRecorder` halves the amplitude array when it exceeds `maxBins` (default 4000). Temporal resolution on the oldest portions degrades after each halving cycle.
 - **Zoom detail ends at the pyramid's base** — past roughly `pyramidResolution / barCount` × zoom (about 80× for 200 bars at the default), bars repeat base bins rather than revealing more. Raise `pyramidResolution` for long files you expect to zoom deeply. Summaries without a pyramid (`MicrophoneRecorder`, `demo(...)`, server JSON that omits it) still stretch their flat `amplitudes`.
@@ -915,7 +939,7 @@ shipping behaviour, and brings the package to Swift 6.
   `.waveformTimelineDirection(_:)`; `.circular` stays clockwise
 - tvOS support — needs a focus-engine interaction model, since `DragGesture` and `MagnifyGesture`
   are both unavailable on the platform
-- Explicit watchOS target
+- ✅ watchOS target — watchOS 10+, `AVAudioFile` decoding, Digital Crown zoom, CI build
 - iOS 16 backport (`ObservableObject`)
 
 Phases are sequenced by stability: each phase is tested and considered stable before the next begins.

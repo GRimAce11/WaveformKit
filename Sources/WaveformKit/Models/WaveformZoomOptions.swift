@@ -111,6 +111,25 @@ public struct WaveformZoomOptions: Sendable, Equatable {
         return min(maxZoomFactor, max(1, scaled))
     }
 
+    // Digital Crown zoom (watchOS, where there is no pinch).  The crown value is the base-2
+    // logarithm of the zoom factor, so every step of the crown changes the zoom by the same
+    // ratio: 0 is the full view, 1 is 2×, 2 is 4×, and so on up to `maxZoomFactor`.
+
+    /// Range of the crown value: `0...log2(maxZoomFactor)`.
+    var crownRange: ClosedRange<Double> { 0...log2(maxZoomFactor) }
+
+    /// Zoom factor for a crown value, clamped to `[1, maxZoomFactor]`.
+    func zoomFactor(crownValue: Double) -> Double {
+        guard crownValue.isFinite else { return 1 }
+        return min(maxZoomFactor, max(1, pow(2, crownValue)))
+    }
+
+    /// Crown value for a zoom factor, clamped to `crownRange`.
+    func crownValue(zoomFactor: Double) -> Double {
+        guard zoomFactor.isFinite, zoomFactor > 1 else { return 0 }
+        return min(crownRange.upperBound, log2(zoomFactor))
+    }
+
     /// Seconds to pan for a horizontal drag of `deltaPoints`, given the currently visible span
     /// and the view's width.  The audio follows the finger, like every scrollable surface on the
     /// platform: dragging right reveals earlier audio when time runs left to right, and later

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **watchOS 10 support** (Phase 5). `Package.swift` lists `.watchOS(.v10)`, and CI builds for the
+  watchOS Simulator. `WaveformView`, `WaveformLoader`, `WaveformCache`, `AVAudioEnginePlayer`,
+  `AVAudioPlayerAdapter`, `AVPlayerAdapter` and `MicrophoneRecorder` all work there.
+  - `AudioDecoder` reads with `AVAudioFile` on watchOS, where `AVAssetReader` is unavailable. The
+    bars and pyramid match the `AVAssetReader` path; movie files are not read.
+  - Zoom is driven by the Digital Crown, since a watch has no pinch: each step doubles or halves
+    the zoom about the centre of the visible range. Not used with `yieldsToVerticalScroll`, so a
+    waveform in a list leaves the crown to the list.
+  - The audio session, interruption and route-change handling, and record permission now run on
+    watchOS too.
+  - Not on watchOS: `AVPlayerAmplitudeTap` (no MediaToolbox) and the Metal backend (no MetalKit;
+    bars draw with `Canvas`).
+
 ## [0.7.0] - 2026-11-27
 
 Phase 4 and the first half of Phase 5: zoomed waveforms gain real detail, bar styles get an

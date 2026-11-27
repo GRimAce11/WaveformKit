@@ -1,7 +1,9 @@
 import XCTest
 import SwiftUI
 import AVFoundation
+#if canImport(Metal)
 import Metal
+#endif
 @testable import WaveformKit
 
 final class WaveformKitTests: XCTestCase {
@@ -1024,6 +1026,31 @@ final class WaveformKitTests: XCTestCase {
                        "Must not zoom out past the full duration")
     }
 
+    func testCrownZoomIsExponentialAndClamped() {
+        let options = WaveformZoomOptions(maxZoomFactor: 16)
+        XCTAssertEqual(options.crownRange.lowerBound, 0)
+        XCTAssertEqual(options.crownRange.upperBound, 4, accuracy: 1e-9)
+        XCTAssertEqual(options.zoomFactor(crownValue: 0), 1, accuracy: 1e-9)
+        XCTAssertEqual(options.zoomFactor(crownValue: 1), 2, accuracy: 1e-9)
+        XCTAssertEqual(options.zoomFactor(crownValue: 3), 8, accuracy: 1e-9)
+        XCTAssertEqual(options.zoomFactor(crownValue: 10), 16, accuracy: 1e-9, "Clamped to maxZoomFactor")
+        XCTAssertEqual(options.zoomFactor(crownValue: -2), 1, accuracy: 1e-9, "Never below the full view")
+        XCTAssertEqual(options.zoomFactor(crownValue: .nan), 1)
+    }
+
+    func testCrownValueRoundTripsZoomFactor() {
+        let options = WaveformZoomOptions(maxZoomFactor: 50)
+        for factor in [1.0, 1.5, 2, 7.3, 50] {
+            XCTAssertEqual(
+                options.zoomFactor(crownValue: options.crownValue(zoomFactor: factor)), factor,
+                accuracy: 1e-9
+            )
+        }
+        XCTAssertEqual(options.crownValue(zoomFactor: 0.5), 0)
+        XCTAssertEqual(options.crownValue(zoomFactor: 500), options.crownRange.upperBound)
+        XCTAssertEqual(WaveformZoomOptions(maxZoomFactor: 1).crownRange.upperBound, 0)
+    }
+
     func testZoomTargetRejectsNonFiniteMagnification() {
         let options = WaveformZoomOptions()
         XCTAssertEqual(options.zoomTarget(base: 3, magnification: .infinity), 3, accuracy: 1e-9)
@@ -1716,6 +1743,97 @@ extension WaveformKitTests {
         XCTAssertNil(summary.pyramid)
     }
 
+    // MARK: AVAudioFile decoder (watchOS)
+    //
+    // watchOS has no AVAssetReader, so it decodes with AVAudioFile.  That path is compiled
+    // everywhere so it can be checked here against the reader every other platform uses.
+
+    func testAudioFileDecoderMatchesAssetReader() async throws {
+        let url = try makeToneFile(duration: 2.0, envelope: { $0 })
+        defer { removeFile(url) }
+
+        let reader = try await AudioDecoder.summarize(url: url, targetBars: 100)
+        let file = try AudioDecoder.summarizeWithAudioFile(
+            url: url, targetBars: 100,
+            pyramidResolution: WaveformSummaryPyramid.defaultResolution, onProgress: nil
+        )
+
+        XCTAssertEqual(file.duration, reader.duration, accuracy: 1e-6)
+        XCTAssertEqual(file.sampleRate, reader.sampleRate)
+        XCTAssertEqual(file.channelCount, reader.channelCount)
+        XCTAssertEqual(file.amplitudes.count, reader.amplitudes.count)
+        for (a, b) in zip(file.amplitudes, reader.amplitudes) {
+            XCTAssertEqual(a, b, accuracy: 1e-4)
+        }
+        let filePyramid = try XCTUnwrap(file.pyramid)
+        let readerPyramid = try XCTUnwrap(reader.pyramid)
+        XCTAssertEqual(filePyramid.resolution, readerPyramid.resolution)
+        for (a, b) in zip(filePyramid.baseAmplitudes, readerPyramid.baseAmplitudes) {
+            XCTAssertEqual(a, b, accuracy: 1e-3)
+        }
+    }
+
+    func testAudioFileDecoderReadsStereoAcrossChunks() throws {
+        // Two channels and several read chunks: the interleaved layout and the chunk boundaries
+        // must not change the bins.  Left is silent, right a full-scale tone, so every bar sees
+        // the same mix and normalises to 1.
+        let sampleRate = 44_100.0
+        let frames = Int(AudioDecoder.audioFileChunkFrames) * 3 + 1_000
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WaveformKitStereo-\(UUID().uuidString).wav")
+        defer { removeFile(url) }
+        let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 2, interleaved: false
+        )!
+        do {
+            let out = try AVAudioFile(forWriting: url, settings: format.settings)
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames))!
+            buffer.frameLength = AVAudioFrameCount(frames)
+            for i in 0..<frames {
+                buffer.floatChannelData![0][i] = 0
+                buffer.floatChannelData![1][i] = Float(sin(2 * .pi * 441 * Double(i) / sampleRate))
+            }
+            try out.write(from: buffer)
+        }
+
+        let summary = try AudioDecoder.summarizeWithAudioFile(
+            url: url, targetBars: 10, pyramidResolution: 0, onProgress: nil
+        )
+        XCTAssertEqual(summary.channelCount, 2)
+        XCTAssertEqual(summary.duration, Double(frames) / sampleRate, accuracy: 1e-6)
+        XCTAssertGreaterThanOrEqual(summary.amplitudes.count, 10)
+        for amplitude in summary.amplitudes.prefix(10) {
+            XCTAssertEqual(amplitude, 1, accuracy: 0.01)
+        }
+    }
+
+    func testAudioFileDecoderThrowsOnNonAudioFile() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WaveformKitNotAudio-\(UUID().uuidString).wav")
+        try Data("this is not audio".utf8).write(to: url)
+        defer { removeFile(url) }
+
+        XCTAssertThrowsError(try AudioDecoder.summarizeWithAudioFile(
+            url: url, targetBars: 20, pyramidResolution: 0, onProgress: nil
+        )) { error in
+            XCTAssertEqual(error as? AudioDecoderError, .readerInitFailed)
+        }
+    }
+
+    func testAudioFileDecoderReportsProgressToOne() throws {
+        let url = try makeToneFile(duration: 1.0)
+        defer { removeFile(url) }
+
+        let collector = ProgressCollector()
+        _ = try AudioDecoder.summarizeWithAudioFile(
+            url: url, targetBars: 50, pyramidResolution: 0, onProgress: { collector.record($0) }
+        )
+        XCTAssertEqual(collector.values.last, 1.0)
+        for (a, b) in zip(collector.values, collector.values.dropFirst()) {
+            XCTAssertLessThanOrEqual(a, b)
+        }
+    }
+
     func testCacheKeyIncludesPyramidResolution() throws {
         try withTemporaryCache(budget: WaveformCache.Configuration.defaultMaximumBytes) { dir in
             let audio = try makeSourceFile(dir, name: "p.wav")
@@ -1858,12 +1976,14 @@ extension WaveformKitTests {
         XCTAssertTrue(source.contains("played ? 0 : \(MetalBarsShader.maximumStopsPerShading);"))
     }
 
+    #if canImport(MetalKit)
     func testMetalShaderCompilesOnThisDevice() throws {
         // The shader is a string compiled at runtime, so a Swift build cannot catch a typo in
         // it.  This does.  Skipped on machines with no Metal device.
         try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "No Metal device")
         XCTAssertNotNil(MetalBarsResources.make(), "Shader compilation or pipeline creation failed")
     }
+    #endif
 }
 
 // MARK: - Region selection (Phase 5)

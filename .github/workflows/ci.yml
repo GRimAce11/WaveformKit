@@ -52,7 +52,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [iOS Simulator, visionOS Simulator]
+        platform: [iOS Simulator, visionOS Simulator, watchOS Simulator]
     steps:
       - uses: actions/checkout@v5
 
@@ -63,8 +63,9 @@ jobs:
         run: xcodebuild -resolvePackageDependencies -scheme WaveformKit
 
       # This matters more than it looks: the audio-session code lives inside
-      # `#if os(iOS) || os(visionOS)`, so a macOS `swift build` never compiles it. Concurrency
-      # errors in that code are only visible here.
+      # `#if os(iOS) || os(tvOS) || os(visionOS) || os(watchOS)`, so a macOS `swift build` never
+      # compiles it, and watchOS swaps in its own decoder and crown zoom. Errors in that code are
+      # only visible here.
       - name: Build for ${{ matrix.platform }}
         run: |
           xcodebuild \

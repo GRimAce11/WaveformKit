@@ -1,6 +1,5 @@
 import Foundation
 import AVFoundation
-import Accelerate
 
 public enum AudioDecoderError: Error, Sendable {
     case noAudioTrack
@@ -10,6 +9,11 @@ public enum AudioDecoderError: Error, Sendable {
 
 public enum AudioDecoder {
     /// Decodes an audio file and returns a normalized amplitude summary.
+    ///
+    /// On watchOS, where `AVAssetReader` is unavailable, the file is read with `AVAudioFile`
+    /// instead.  That opens audio files — WAV, AIFF, CAF, M4A, MP3 and the like — but not the
+    /// audio track of a movie file, which fails with ``AudioDecoderError/readerInitFailed``.
+    /// The bars and pyramid come out the same either way.
     ///
     /// - Parameters:
     ///   - url: Local file URL of the audio asset.
@@ -27,6 +31,32 @@ public enum AudioDecoder {
         targetBars: Int = 200,
         pyramidResolution: Int = WaveformSummaryPyramid.defaultResolution,
         onProgress: (@Sendable (Double) -> Void)? = nil
+    ) async throws -> WaveformSummary {
+        #if os(watchOS)
+        return try summarizeWithAudioFile(
+            url: url, targetBars: targetBars, pyramidResolution: pyramidResolution,
+            onProgress: onProgress
+        )
+        #else
+        return try await summarizeWithAssetReader(
+            url: url, targetBars: targetBars, pyramidResolution: pyramidResolution,
+            onProgress: onProgress
+        )
+        #endif
+    }
+
+    /// Shortest pyramid bin, in frames.  An RMS over fewer samples than this mostly measures
+    /// where in the waveform's cycle the window happened to start, not how loud the audio is.
+    static let minimumFramesPerPyramidBin = 64
+
+    // MARK: - AVAssetReader (every platform but watchOS)
+
+    #if !os(watchOS)
+    private static func summarizeWithAssetReader(
+        url: URL,
+        targetBars: Int,
+        pyramidResolution: Int,
+        onProgress: (@Sendable (Double) -> Void)?
     ) async throws -> WaveformSummary {
         let asset = AVURLAsset(url: url)
         let duration = try await asset.load(.duration).seconds
@@ -59,29 +89,13 @@ public enum AudioDecoder {
         reader.add(output)
         guard reader.startReading() else { throw AudioDecoderError.readFailed }
 
-        let totalFrames = max(1, Int(duration * sampleRate))
-        let channels = max(1, channelCount)
-        let framesPerBar = max(1, totalFrames / max(1, targetBars))
-        let elementsPerBar = framesPerBar * channels
-
-        // Pyramid base bins.  Only worth building when they are finer than the bars.
-        let framesPerFine = pyramidResolution > 0
-            ? max(minimumFramesPerPyramidBin, totalFrames / pyramidResolution)
-            : 0
-        let buildsPyramid = framesPerFine > 0 && framesPerFine < framesPerBar
-            && totalFrames / framesPerFine > targetBars
-        let elementsPerFine = framesPerFine * channels
-
-        var amplitudes: [Float] = []
-        amplitudes.reserveCapacity(targetBars)
-        var fine: [Float] = []
-        if buildsPyramid { fine.reserveCapacity(totalFrames / framesPerFine + 1) }
-
-        var buffer: [Float] = []
-        // Two read heads over the same buffer: one per bar, one per pyramid bin.  They advance
-        // at different rates, so the buffer is trimmed only up to the slower of the two.
-        var consumed = 0
-        var fineConsumed = 0
+        var accumulator = AmplitudeAccumulator(
+            totalFrames: Int(duration * sampleRate),
+            channelCount: channelCount,
+            targetBars: targetBars,
+            pyramidResolution: pyramidResolution,
+            onProgress: onProgress
+        )
 
         while let sampleBuffer = output.copyNextSampleBuffer() {
             // Check for Swift Task cancellation on every decoded chunk.  For a 90-minute
@@ -103,29 +117,7 @@ public enum AudioDecoder {
                     destination: ptr.baseAddress!
                 )
             }
-            buffer.append(contentsOf: chunk)
-
-            while buffer.count - consumed >= elementsPerBar {
-                amplitudes.append(rms(buffer[consumed..<(consumed + elementsPerBar)]))
-                consumed += elementsPerBar
-                // Estimated progress: bars decoded / target.  Cap at 0.99 so the caller
-                // knows 1.0 is reserved for the final "all done" signal below.
-                onProgress?(min(0.99, Double(amplitudes.count) / Double(targetBars)))
-            }
-
-            if buildsPyramid {
-                while buffer.count - fineConsumed >= elementsPerFine {
-                    fine.append(rms(buffer[fineConsumed..<(fineConsumed + elementsPerFine)]))
-                    fineConsumed += elementsPerFine
-                }
-            }
-
-            let trim = buildsPyramid ? min(consumed, fineConsumed) : consumed
-            if trim > elementsPerBar * 8 {
-                buffer.removeFirst(trim)
-                consumed -= trim
-                fineConsumed = buildsPyramid ? fineConsumed - trim : 0
-            }
+            accumulator.append(chunk)
         }
 
         // Final cancellation check before we build and return the summary.
@@ -133,51 +125,69 @@ public enum AudioDecoder {
         // between the last copyNextSampleBuffer() returning nil and this point.
         try Task.checkCancellation()
 
-        if buffer.count > consumed {
-            amplitudes.append(rms(buffer[consumed..<buffer.count]))
-        }
-        if buildsPyramid, buffer.count > fineConsumed {
-            // The leftover can be a handful of samples, and an RMS over a few samples of a sine
-            // can land anywhere up to its crest — enough to become the normalisation peak and
-            // shrink every other bin.  Measure the tail over a full bin's width instead,
-            // overlapping the previous bin.
-            let from = max(0, buffer.count - elementsPerFine)
-            fine.append(rms(buffer[from..<buffer.count]))
-        }
-        onProgress?(1.0)   // signal decode complete
-
         if reader.status == .failed {
             throw AudioDecoderError.readFailed
         }
 
-        normaliseToUnitPeak(&amplitudes)
-        normaliseToUnitPeak(&fine)
-        let pyramid = fine.count > amplitudes.count ? WaveformSummaryPyramid(amplitudes: fine) : nil
+        return accumulator.finish(duration: duration, sampleRate: sampleRate, channelCount: channelCount)
+    }
+    #endif
 
-        return WaveformSummary(
-            amplitudes: amplitudes,
-            duration: duration,
-            sampleRate: sampleRate,
+    // MARK: - AVAudioFile (watchOS)
+
+    /// Frames read per `AVAudioFile.read(into:)` call.  About 0.37 s at 44.1 kHz: large enough
+    /// that the per-call overhead is noise, small enough to keep cancellation responsive.
+    static let audioFileChunkFrames: AVAudioFrameCount = 16_384
+
+    /// The decoder used on watchOS.  Compiled on every platform so the test suite can check it
+    /// against the `AVAssetReader` path on macOS.
+    static func summarizeWithAudioFile(
+        url: URL,
+        targetBars: Int,
+        pyramidResolution: Int,
+        onProgress: (@Sendable (Double) -> Void)?
+    ) throws -> WaveformSummary {
+        let file: AVAudioFile
+        do {
+            // Interleaved Float32, the same layout the asset-reader path asks for, so the
+            // accumulator sees identical sample order from either reader.
+            file = try AVAudioFile(forReading: url, commonFormat: .pcmFormatFloat32, interleaved: true)
+        } catch {
+            throw AudioDecoderError.readerInitFailed
+        }
+
+        let format = file.processingFormat
+        let sampleRate = format.sampleRate
+        let channelCount = Int(format.channelCount)
+        guard sampleRate > 0, channelCount > 0,
+              let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: audioFileChunkFrames)
+        else { throw AudioDecoderError.readerInitFailed }
+
+        var accumulator = AmplitudeAccumulator(
+            totalFrames: Int(file.length),
             channelCount: channelCount,
-            pyramid: pyramid
+            targetBars: targetBars,
+            pyramidResolution: pyramidResolution,
+            onProgress: onProgress
         )
-    }
 
-    /// Shortest pyramid bin, in frames.  An RMS over fewer samples than this mostly measures
-    /// where in the waveform's cycle the window happened to start, not how loud the audio is.
-    static let minimumFramesPerPyramidBin = 64
+        while file.framePosition < file.length {
+            try Task.checkCancellation()
+            do { try file.read(into: pcm, frameCount: audioFileChunkFrames) }
+            catch { throw AudioDecoderError.readFailed }
 
-    private static func rms(_ slice: ArraySlice<Float>) -> Float {
-        slice.withContiguousStorageIfAvailable { ptr -> Float in
-            guard let base = ptr.baseAddress, ptr.count > 0 else { return 0 }
-            var r: Float = 0
-            vDSP_rmsqv(base, 1, &r, vDSP_Length(ptr.count))
-            return r
-        } ?? 0
-    }
+            let frames = Int(pcm.frameLength)
+            // An interleaved buffer exposes all of its channels through the first pointer.
+            guard frames > 0, let samples = pcm.floatChannelData?[0] else { break }
+            accumulator.append(UnsafeBufferPointer(start: samples, count: frames * channelCount))
+        }
 
-    private static func normaliseToUnitPeak(_ values: inout [Float]) {
-        guard let peak = values.max(), peak > 0 else { return }
-        values = values.map { $0 / peak }
+        try Task.checkCancellation()
+
+        return accumulator.finish(
+            duration: Double(file.length) / sampleRate,
+            sampleRate: sampleRate,
+            channelCount: channelCount
+        )
     }
 }

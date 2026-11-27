@@ -1,3 +1,4 @@
+#if canImport(MetalKit)
 import Metal
 import Observation
 
@@ -93,3 +94,5 @@ final class MetalBarsPipeline {
         }
     }
 }
+
+#endif
