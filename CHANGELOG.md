@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Phase 4 begins: zoomed waveforms gain real detail. Read **Changed** before upgrading — bar heights
-at 1× shift slightly for decoded files, and existing disk-cache entries are re-decoded once.
+## [0.7.0] - 2026-11-27
+
+Phase 4 and the first half of Phase 5: zoomed waveforms gain real detail, bar styles get an
+opt-in Metal backend, and the view gains region selection and right-to-left timelines. Read
+**Changed** before upgrading — bar heights at 1× shift slightly for decoded files, existing
+disk-cache entries are re-decoded once, and in right-to-left layouts time now runs right to left
+by default.
 
 ### Added
 

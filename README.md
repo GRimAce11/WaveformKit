@@ -72,7 +72,7 @@ a Swift 5 language mode — but the toolchain itself must be 6.0 or newer.
 **Package.swift:**
 ```swift
 dependencies: [
-    .package(url: "https://github.com/GRimAce11/WaveformKit.git", from: "0.6.0")
+    .package(url: "https://github.com/GRimAce11/WaveformKit.git", from: "0.7.0")
 ]
 ```
 
@@ -862,7 +862,7 @@ WaveformColors(
 
 ## Roadmap
 
-### Phase 3 — Close the Promises *(0.6.0, in progress)*
+### Phase 3 — Close the Promises *(0.6.0)* ✅
 
 Completes the Phase 3 deliverables, retires the gaps between the documented API and the
 shipping behaviour, and brings the package to Swift 6.
@@ -897,7 +897,7 @@ shipping behaviour, and brings the package to Swift 6.
 - ❌ tvOS **not** added: `DragGesture` is unavailable there, so the entire interaction path fails
   to compile. Moved to Phase 5, where it needs a focus-engine model rather than a platform line
 
-### Phase 4 — Rendering Evolution *(0.7.0, in progress)*
+### Phase 4 — Rendering Evolution *(0.7.0)*
 
 - ✅ `WaveformSummaryPyramid` — multi-resolution amplitude arrays for efficient high-zoom
   rendering, built by the decoder in the same pass and cached alongside the summary
