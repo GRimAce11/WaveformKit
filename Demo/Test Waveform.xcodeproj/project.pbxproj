@@ -8,16 +8,35 @@
 
 /* Begin PBXBuildFile section */
 		DAC795F12FB5AE1B00E97F74 /* WaveformKit in Frameworks */ = {isa = PBXBuildFile; productRef = DAC795F02FB5AE1B00E97F74 /* WaveformKit */; };
+		DBC000002FB6000100E97F74 /* WaveformKit in Frameworks */ = {isa = PBXBuildFile; productRef = DBC000002FB6000B00E97F74 /* WaveformKit */; };
+		DBC000002FB6000C00E97F74 /* WaveformKit in Frameworks */ = {isa = PBXBuildFile; productRef = DBC000002FB6001600E97F74 /* WaveformKit */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		DA9736CD2FB3404700C646D4 /* Test Waveform.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Test Waveform.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		DBC000002FB6000200E97F74 /* Watch Demo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Watch Demo.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		DBC000002FB6000D00E97F74 /* TV Demo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "TV Demo.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		DA9736CF2FB3404700C646D4 /* Test Waveform */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = "Test Waveform";
+			sourceTree = "<group>";
+		};
+		DBC000002FB6000000E97F74 /* Shared */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "Shared";
+			sourceTree = "<group>";
+		};
+		DBC000002FB6000300E97F74 /* Watch Demo */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "Watch Demo";
+			sourceTree = "<group>";
+		};
+		DBC000002FB6000E00E97F74 /* TV Demo */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "TV Demo";
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -31,6 +50,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		DBC000002FB6000400E97F74 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				DBC000002FB6000100E97F74 /* WaveformKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		DBC000002FB6000F00E97F74 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				DBC000002FB6000C00E97F74 /* WaveformKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -38,6 +73,9 @@
 			isa = PBXGroup;
 			children = (
 				DA9736CF2FB3404700C646D4 /* Test Waveform */,
+				DBC000002FB6000300E97F74 /* Watch Demo */,
+				DBC000002FB6000E00E97F74 /* TV Demo */,
+				DBC000002FB6000000E97F74 /* Shared */,
 				DA9736CE2FB3404700C646D4 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -46,6 +84,8 @@
 			isa = PBXGroup;
 			children = (
 				DA9736CD2FB3404700C646D4 /* Test Waveform.app */,
+				DBC000002FB6000200E97F74 /* Watch Demo.app */,
+				DBC000002FB6000D00E97F74 /* TV Demo.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -67,6 +107,7 @@
 			);
 			fileSystemSynchronizedGroups = (
 				DA9736CF2FB3404700C646D4 /* Test Waveform */,
+				DBC000002FB6000000E97F74 /* Shared */,
 			);
 			name = "Test Waveform";
 			packageProductDependencies = (
@@ -74,6 +115,54 @@
 			);
 			productName = "Test Waveform";
 			productReference = DA9736CD2FB3404700C646D4 /* Test Waveform.app */;
+			productType = "com.apple.product-type.application";
+		};
+		DBC000002FB6000500E97F74 /* Watch Demo */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = DBC000002FB6000A00E97F74 /* Build configuration list for PBXNativeTarget "Watch Demo" */;
+			buildPhases = (
+				DBC000002FB6000700E97F74 /* Sources */,
+				DBC000002FB6000400E97F74 /* Frameworks */,
+				DBC000002FB6000600E97F74 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				DBC000002FB6000300E97F74 /* Watch Demo */,
+				DBC000002FB6000000E97F74 /* Shared */,
+			);
+			name = "Watch Demo";
+			packageProductDependencies = (
+				DBC000002FB6000B00E97F74 /* WaveformKit */,
+			);
+			productName = "Watch Demo";
+			productReference = DBC000002FB6000200E97F74 /* Watch Demo.app */;
+			productType = "com.apple.product-type.application";
+		};
+		DBC000002FB6001000E97F74 /* TV Demo */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = DBC000002FB6001500E97F74 /* Build configuration list for PBXNativeTarget "TV Demo" */;
+			buildPhases = (
+				DBC000002FB6001200E97F74 /* Sources */,
+				DBC000002FB6000F00E97F74 /* Frameworks */,
+				DBC000002FB6001100E97F74 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				DBC000002FB6000E00E97F74 /* TV Demo */,
+				DBC000002FB6000000E97F74 /* Shared */,
+			);
+			name = "TV Demo";
+			packageProductDependencies = (
+				DBC000002FB6001600E97F74 /* WaveformKit */,
+			);
+			productName = "TV Demo";
+			productReference = DBC000002FB6000D00E97F74 /* TV Demo.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -87,6 +176,12 @@
 				LastUpgradeCheck = 2640;
 				TargetAttributes = {
 					DA9736CC2FB3404700C646D4 = {
+						CreatedOnToolsVersion = 26.4.1;
+					};
+					DBC000002FB6000500E97F74 = {
+						CreatedOnToolsVersion = 26.4.1;
+					};
+					DBC000002FB6001000E97F74 = {
 						CreatedOnToolsVersion = 26.4.1;
 					};
 				};
@@ -109,6 +204,8 @@
 			projectRoot = "";
 			targets = (
 				DA9736CC2FB3404700C646D4 /* Test Waveform */,
+				DBC000002FB6000500E97F74 /* Watch Demo */,
+				DBC000002FB6001000E97F74 /* TV Demo */,
 			);
 		};
 /* End PBXProject section */
@@ -121,10 +218,38 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		DBC000002FB6000600E97F74 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		DBC000002FB6001100E97F74 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		DA9736C92FB3404700C646D4 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		DBC000002FB6000700E97F74 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		DBC000002FB6001200E97F74 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -319,6 +444,132 @@
 			};
 			name = Release;
 		};
+		DBC000002FB6000800E97F74 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = GWCH534ZZW;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "WaveformKit";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Watch Demo records audio to demonstrate WaveformKit's MicrophoneRecorder.";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				INFOPLIST_KEY_WKWatchOnly = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.sam.metro.Test-Waveform.watch";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 10.0;
+			};
+			name = Debug;
+		};
+		DBC000002FB6000900E97F74 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = GWCH534ZZW;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "WaveformKit";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Watch Demo records audio to demonstrate WaveformKit's MicrophoneRecorder.";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				INFOPLIST_KEY_WKWatchOnly = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.sam.metro.Test-Waveform.watch";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 10.0;
+			};
+			name = Release;
+		};
+		DBC000002FB6001300E97F74 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = GWCH534ZZW;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "WaveformKit";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIUserInterfaceStyle = Automatic;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.sam.metro.Test-Waveform.tv";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = appletvos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 3;
+				TVOS_DEPLOYMENT_TARGET = 17.0;
+			};
+			name = Debug;
+		};
+		DBC000002FB6001400E97F74 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = GWCH534ZZW;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "WaveformKit";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIUserInterfaceStyle = Automatic;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.sam.metro.Test-Waveform.tv";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = appletvos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 3;
+				TVOS_DEPLOYMENT_TARGET = 17.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -340,6 +591,24 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		DBC000002FB6000A00E97F74 /* Build configuration list for PBXNativeTarget "Watch Demo" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DBC000002FB6000800E97F74 /* Debug */,
+				DBC000002FB6000900E97F74 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		DBC000002FB6001500E97F74 /* Build configuration list for PBXNativeTarget "TV Demo" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DBC000002FB6001300E97F74 /* Debug */,
+				DBC000002FB6001400E97F74 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -351,6 +620,16 @@
 
 /* Begin XCSwiftPackageProductDependency section */
 		DAC795F02FB5AE1B00E97F74 /* WaveformKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = DAC795EF2FB5AE1B00E97F74 /* XCLocalSwiftPackageReference "../" */;
+			productName = WaveformKit;
+		};
+		DBC000002FB6000B00E97F74 /* WaveformKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = DAC795EF2FB5AE1B00E97F74 /* XCLocalSwiftPackageReference "../" */;
+			productName = WaveformKit;
+		};
+		DBC000002FB6001600E97F74 /* WaveformKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = DAC795EF2FB5AE1B00E97F74 /* XCLocalSwiftPackageReference "../" */;
 			productName = WaveformKit;

@@ -107,7 +107,8 @@ still compiles if your project pins one — but the toolchain itself must be Swi
 **Try the demo first.** Open [`Demo/Test Waveform.xcodeproj`](Demo/) and run it — it uses the
 package from this folder, generates its own test tone, and needs no network. It has a screen for
 each major feature: style gallery, playback with markers, async loading, microphone, custom
-renderers, zoom and pan, and selection (with a right-to-left toggle).
+renderers, zoom and pan, and selection (with a right-to-left toggle). The same project has small
+**Watch Demo** and **TV Demo** apps for Digital Crown zoom and Siri Remote seeking.
 
 ---
 
