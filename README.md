@@ -7,7 +7,7 @@ A SwiftUI waveform visualization framework for audio apps. Handles decoding, cac
 </p>
 
 ![Swift](https://img.shields.io/badge/Swift-6.0+-orange?logo=swift)
-![Platforms](https://img.shields.io/badge/Platforms-iOS%2017%20%7C%20macOS%2014%20%7C%20visionOS%201%20%7C%20watchOS%2010-blue)
+![Platforms](https://img.shields.io/badge/Platforms-iOS%2017%20%7C%20macOS%2014%20%7C%20tvOS%2017%20%7C%20visionOS%201%20%7C%20watchOS%2010-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![Tests](https://img.shields.io/badge/Tests-192%20passing-brightgreen)
 
@@ -40,6 +40,7 @@ Key design decisions that differentiate it:
 - Multi-resolution summaries (`WaveformSummaryPyramid`), so zooming in reveals real detail
 - Opt-in Metal backend for timelines with thousands of bars
 - watchOS: decoding, playback, recording, and Digital Crown zoom on Apple Watch
+- tvOS: a focusable seek control driven by the Siri Remote
 - Seek gestures on all styles — linear drag on bar/line/dot styles, angular drag on circular
 - Markers and region overlays with tap callbacks, VoiceOver children, and circular-style support
 - Live microphone capture (`MicrophoneRecorder`) with bounded memory and interruption handling
@@ -57,7 +58,7 @@ Key design decisions that differentiate it:
 
 ## Requirements
 
-- iOS 17.0+ / macOS 14.0+ / visionOS 1.0+ / watchOS 10.0+
+- iOS 17.0+ / macOS 14.0+ / tvOS 17.0+ / visionOS 1.0+ / watchOS 10.0+
 - Swift 6.0+ / Xcode 16+
 
 The package builds under the **Swift 6 language mode** with complete concurrency checking and no
@@ -577,6 +578,24 @@ WaveformKit builds for watchOS 10 and later. The same `WaveformView`, `WaveformL
 - **Recording** needs `NSMicrophoneUsageDescription` in the watch app's Info.plist, as on iOS.
   The session uses `.playAndRecord` with the system's default routing.
 
+## Apple TV
+
+WaveformKit builds for tvOS 17 and later. There is no touch screen, so `WaveformView` becomes a
+focusable control for the Siri Remote:
+
+- **Focus** uses the system's highlight effect. The waveform is focusable only when it has an
+  `onSeek` handler; a display-only waveform never takes focus it cannot use.
+- **Left and right** presses on the clickpad seek by a twentieth of the visible span — about
+  9 seconds across a 3-minute track, finer when zoomed. While zoomed, the view pans to keep the
+  playhead in sight. In right-to-left layouts, left moves later.
+- **Up, down, Play/Pause and Back are left to the system**, as Apple's guidelines ask: swipes
+  move focus, Play/Pause belongs to your player, and Back returns to the previous screen.
+- **Not available on tvOS:** drag scrubbing, pinch zoom, drag-to-pan, marker taps and region
+  selection, all of which need touch. Markers and selections still draw, a `viewport` binding
+  can still be zoomed and panned from your own controls, and VoiceOver's adjustable seek works.
+
+The players, decoder, cache, FFT tap and Metal backend work as on iOS.
+
 ---
 
 ## Players
@@ -874,7 +893,7 @@ WaveformColors(
 - **iOS 17 / macOS 14 floor** — `@Observable` requires iOS 17+. An iOS 16 backport is on the roadmap.
 - **Swift 6 toolchain required** — `Package.swift` uses `swift-tools-version: 6.0`, so Xcode 15 can no longer resolve the package. The language *mode* is still selectable; the toolchain is not.
 - **watchOS differences** — no `AVPlayerAmplitudeTap`, no Metal backend, and movie files do not decode; zoom is on the Digital Crown rather than a pinch. See [Apple Watch](#apple-watch).
-- **No tvOS** — SwiftUI marks `DragGesture` unavailable on tvOS, so seeking, panning, marker taps, and double-tap-to-reset cannot compile there. Everything else in the package is tvOS-clean; support needs a focus-engine interaction model, which is Phase 5.
+- **tvOS is remote-only** — `DragGesture` does not exist on tvOS, so the touch interactions (scrubbing, pinch, pan, marker taps, selection) are not available there; left and right on the Siri Remote seek instead. See [Apple TV](#apple-tv).
 - **Long recordings** — `MicrophoneRecorder` halves the amplitude array when it exceeds `maxBins` (default 4000). Temporal resolution on the oldest portions degrades after each halving cycle.
 - **Zoom detail ends at the pyramid's base** — past roughly `pyramidResolution / barCount` × zoom (about 80× for 200 bars at the default), bars repeat base bins rather than revealing more. Raise `pyramidResolution` for long files you expect to zoom deeply. Summaries without a pyramid (`MicrophoneRecorder`, `demo(...)`, server JSON that omits it) still stretch their flat `amplitudes`.
 - **Metal covers bar styles only** — `.line`, `.dots`, `.circular`, `.dancingBars` and `.custom` always draw with `Canvas`, whatever `waveformRenderingBackend` says. Wide-gamut (Display P3) colours render at their nearest sRGB value on the Metal path.
@@ -937,8 +956,7 @@ shipping behaviour, and brings the package to Swift 6.
   zoomed, which they did not before
 - ✅ RTL layout support — time runs right to left in RTL layouts (`.automatic`), overridable with
   `.waveformTimelineDirection(_:)`; `.circular` stays clockwise
-- tvOS support — needs a focus-engine interaction model, since `DragGesture` and `MagnifyGesture`
-  are both unavailable on the platform
+- ✅ tvOS target — tvOS 17+, focusable seek control for the Siri Remote, CI build
 - ✅ watchOS target — watchOS 10+, `AVAudioFile` decoding, Digital Crown zoom, CI build
 - iOS 16 backport (`ObservableObject`)
 

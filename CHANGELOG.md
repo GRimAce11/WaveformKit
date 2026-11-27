@@ -21,6 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     watchOS too.
   - Not on watchOS: `AVPlayerAmplitudeTap` (no MediaToolbox) and the Metal backend (no MetalKit;
     bars draw with `Canvas`).
+- **tvOS 17 support** (Phase 5). `Package.swift` lists `.tvOS(.v17)`, and CI builds for the tvOS
+  Simulator. With no touch screen, `WaveformView` with an `onSeek` handler is a focusable control
+  with the system highlight effect: left and right on the Siri Remote seek by a twentieth of the
+  visible span, panning a zoomed viewport to keep the playhead visible, and following
+  right-to-left time. Up, down, Play/Pause and Back stay with the system. Drag scrubbing, pinch,
+  pan, marker taps and selection are touch-only and not available on tvOS.
+
+### Fixed
+
+- `MicrophoneRecorder` did not compile for tvOS: it used `.defaultToSpeaker` and the pre-17
+  permission API, neither of which exists there. Its tvOS guards had never been built.
 
 ## [0.7.0] - 2026-11-27
 

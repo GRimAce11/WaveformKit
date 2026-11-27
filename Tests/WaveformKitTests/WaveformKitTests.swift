@@ -1026,6 +1026,44 @@ final class WaveformKitTests: XCTestCase {
                        "Must not zoom out past the full duration")
     }
 
+    func testRemoteStepIsATwentiethOfTheVisibleSpan() {
+        XCTAssertEqual(WaveformRemote.stepSize(visibleRange: 0...180), 9, accuracy: 1e-9)
+        XCTAssertEqual(WaveformRemote.stepSize(visibleRange: 60...80), 1, accuracy: 1e-9,
+                       "Zoomed in, each press is finer")
+        XCTAssertEqual(WaveformRemote.stepSize(visibleRange: 10...10.5), 0.1, accuracy: 1e-9,
+                       "Never under a tenth of a second")
+    }
+
+    func testRemoteSeekTargetClampsToTheFile() {
+        XCTAssertEqual(WaveformRemote.seekTarget(currentTime: 50, duration: 180, visibleRange: 0...180, presses: 1), 59, accuracy: 1e-9)
+        XCTAssertEqual(WaveformRemote.seekTarget(currentTime: 50, duration: 180, visibleRange: 0...180, presses: -1), 41, accuracy: 1e-9)
+        XCTAssertEqual(WaveformRemote.seekTarget(currentTime: 4, duration: 180, visibleRange: 0...180, presses: -1), 0)
+        XCTAssertEqual(WaveformRemote.seekTarget(currentTime: 176, duration: 180, visibleRange: 0...180, presses: 1), 180)
+    }
+
+    func testRemotePressDirectionFollowsTimelineDirection() {
+        XCTAssertEqual(WaveformRemote.presses(isLeft: true, rightToLeft: false), -1)
+        XCTAssertEqual(WaveformRemote.presses(isLeft: false, rightToLeft: false), 1)
+        XCTAssertEqual(WaveformRemote.presses(isLeft: true, rightToLeft: true), 1,
+                       "In right-to-left time, later audio is to the left")
+        XCTAssertEqual(WaveformRemote.presses(isLeft: false, rightToLeft: true), -1)
+    }
+
+    func testRemoteViewportFollowsThePlayhead() {
+        var vp = WaveformViewport(duration: 100)
+        vp.zoom(to: 10, anchor: 0, minSpan: 1)            // 0...10
+        XCTAssertEqual(WaveformRemote.viewport(vp, following: 5).visibleRange, vp.visibleRange,
+                       "A visible time leaves the viewport alone")
+        let later = WaveformRemote.viewport(vp, following: 12).visibleRange
+        XCTAssertEqual(later.lowerBound, 2, accuracy: 1e-9)
+        XCTAssertEqual(later.upperBound, 12, accuracy: 1e-9)
+        var mid = vp
+        mid.pan(by: 50)                                     // 50...60
+        let earlier = WaveformRemote.viewport(mid, following: 45).visibleRange
+        XCTAssertEqual(earlier.lowerBound, 45, accuracy: 1e-9)
+        XCTAssertEqual(earlier.upperBound, 55, accuracy: 1e-9)
+    }
+
     func testCrownZoomIsExponentialAndClamped() {
         let options = WaveformZoomOptions(maxZoomFactor: 16)
         XCTAssertEqual(options.crownRange.lowerBound, 0)

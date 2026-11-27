@@ -131,6 +131,16 @@ public struct WaveformView: View {
         }
         .frame(width: width, height: height)
         .contentShape(Rectangle())
+        #if os(tvOS)
+        // No touch screen: the Siri Remote seeks instead.  See `WaveformRemoteModifier`.
+        .modifier(WaveformRemoteModifier(
+            currentTime: currentTime,
+            duration: summary.duration,
+            viewport: viewportBinding,
+            rightToLeft: runsRightToLeft,
+            onSeek: onSeek
+        ))
+        #else
         // Exactly one of these two is live.  Inside a scroll view the gesture must be
         // *simultaneous* so the scroll view keeps receiving the same touch; everywhere else an
         // exclusive gesture gives crisper scrubbing.
@@ -142,6 +152,7 @@ public struct WaveformView: View {
             interactionGesture(size: size),
             including: zoomOptions.yieldsToVerticalScroll ? .all : .subviews
         )
+        #endif
         .modifier(WaveformMagnifyModifier(
             viewport: viewportBinding,
             options: zoomOptions,
@@ -514,6 +525,9 @@ public struct WaveformView: View {
     ///    hold, or any drag under `.drag`); otherwise pan (`.panWhenZoomed` while zoomed) or seek.
     /// 5. Never moved → a tap, resolved on release so the second tap of a double-tap can reset
     ///    the zoom instead of seeking.  A tap outside the selection may also clear it.
+    ///
+    /// Not on tvOS, where `DragGesture` is unavailable; the Siri Remote seeks there instead.
+    #if !os(tvOS)
     private func interactionGesture(size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
@@ -633,6 +647,7 @@ public struct WaveformView: View {
                 applySeek(at: value.location, size: size)
             }
     }
+    #endif
 
     // MARK: - Selection
 

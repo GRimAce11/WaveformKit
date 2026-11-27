@@ -89,7 +89,7 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
     @ObservationIgnored private var summaryPublishCounter: Int = 0
     @ObservationIgnored private let summaryPublishEveryNBins: Int
 
-    #if os(iOS) || os(tvOS) || os(visionOS)
+    #if os(iOS) || os(visionOS)
     /// `AVAudioSession.CategoryOptions.allowBluetooth` was renamed to `.allowBluetoothHFP` in
     /// the iOS 26 / visionOS 26 SDKs — same option, same raw value, different spelling.  Naming
     /// either one directly breaks a build against the other SDK (deprecation warning one way,
@@ -152,9 +152,9 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
         #if os(iOS) || os(tvOS) || os(visionOS) || os(watchOS)
         do {
             let session = AVAudioSession.sharedInstance()
-            #if os(watchOS)
-            // `.defaultToSpeaker` is unavailable on watchOS and `.allowBluetoothHFP` needs
-            // watchOS 11, so the watch takes the system's default routing.
+            #if os(watchOS) || os(tvOS)
+            // `.defaultToSpeaker` is unavailable on watchOS and tvOS, and `.allowBluetoothHFP`
+            // needs watchOS 11, so these take the system's default routing.
             try session.setCategory(.playAndRecord, mode: .measurement, options: [])
             #else
             try session.setCategory(
@@ -483,11 +483,16 @@ public final class MicrophoneRecorder: WaveformPlayerAdapter {
         if #available(iOS 17, tvOS 17, visionOS 1, watchOS 10, *) {
             return await AVAudioApplication.requestRecordPermission()
         } else {
+            #if os(tvOS)
+            // Unreachable: the package's tvOS floor is 17.  The pre-17 API never existed on tvOS.
+            return false
+            #else
             return await withCheckedContinuation { cont in
                 AVAudioSession.sharedInstance().requestRecordPermission { granted in
                     cont.resume(returning: granted)
                 }
             }
+            #endif
         }
         #elseif os(macOS)
         switch AVCaptureDevice.authorizationStatus(for: .audio) {

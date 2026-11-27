@@ -52,7 +52,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [iOS Simulator, visionOS Simulator, watchOS Simulator]
+        platform: [iOS Simulator, tvOS Simulator, visionOS Simulator, watchOS Simulator]
     steps:
       - uses: actions/checkout@v5
 
@@ -64,7 +64,7 @@ jobs:
 
       # This matters more than it looks: the audio-session code lives inside
       # `#if os(iOS) || os(tvOS) || os(visionOS) || os(watchOS)`, so a macOS `swift build` never
-      # compiles it, and watchOS swaps in its own decoder and crown zoom. Errors in that code are
+      # compiles it, watchOS swaps in its own decoder and crown zoom, and tvOS its remote control. Errors in that code are
       # only visible here.
       - name: Build for ${{ matrix.platform }}
         run: |

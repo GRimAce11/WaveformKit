@@ -54,6 +54,7 @@ WaveformView(loader: loader, currentTime: player.currentTime, onSeek: { player.s
 - <doc:RegionSelection>
 - <doc:RightToLeft>
 - <doc:AppleWatch>
+- <doc:AppleTV>
 - ``WaveformViewport``
 - ``WaveformZoomOptions``
 - ``WaveformSummaryPyramid``
