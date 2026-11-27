@@ -97,7 +97,7 @@ playback moves.
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/GRimAce11/WaveformKit.git", from: "0.7.0")
+    .package(url: "https://github.com/GRimAce11/WaveformKit.git", from: "0.8.0")
 ]
 ```
 
@@ -742,8 +742,8 @@ which changes 1× bars slightly. Load with `pyramidResolution: 0` for the 0.6.0 
   `AVAudioEnginePlayer` for local files with bands.
 - **Unusual PCM formats** — the live taps read `Float32` and `Int16` audio. `Int24`, `Int32` and
   big-endian streams read as silence.
-- **iOS 17 / macOS 14 minimum** — the package uses `@Observable`. An iOS 16 backport is on the
-  roadmap.
+- **iOS 17 / macOS 14 minimum** — the package uses `@Observable`. An iOS 16 backport is not
+  scheduled.
 - **Swift 6 toolchain required** — Xcode 15 cannot resolve the package. The language *mode* is
   still your choice.
 - **watchOS and tvOS differ** — see [Apple Watch](#apple-watch) and [Apple TV](#apple-tv).
@@ -825,12 +825,12 @@ At 44.1 kHz with 1024-frame buffers, that is under 0.03 % of the audio thread's 
 - ✅ **Phase 3 — 0.6.0:** zoom and pan gestures, Swift 6 language mode, LRU caches, DocC, visionOS.
 - ✅ **Phase 4 — 0.7.0:** multi-resolution pyramid for detail at high zoom; opt-in Metal backend.
   Deferred: a Metal spectrogram and 120 Hz `.dancingBars`.
-- **Phase 5 — Editor-grade tooling** *(in progress)*
+- ✅ **Phase 5 — 0.7.0 and 0.8.0:** editor-grade tooling and every Apple platform
   - ✅ Region selection, with markers that follow the zoomed view
   - ✅ Right-to-left timelines
   - ✅ watchOS, with Digital Crown zoom
   - ✅ tvOS, with Siri Remote seeking
-  - iOS 16 backport (`ObservableObject`)
+  - Not scheduled: an iOS 16 backport (`ObservableObject`)
 
 Release-by-release detail is in the [changelog](CHANGELOG.md).
 

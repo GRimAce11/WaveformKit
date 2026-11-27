@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-27
+
+Phase 5 finishes its platform work: WaveformKit now builds for every Apple platform. Apple Watch
+zooms with the Digital Crown and decodes with `AVAudioFile`; Apple TV seeks with the Siri Remote.
+Nothing changes on iOS, iPadOS, macOS or visionOS.
+
 ### Added
 
 - **watchOS 10 support** (Phase 5). `Package.swift` lists `.watchOS(.v10)`, and CI builds for the
@@ -27,6 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   visible span, panning a zoomed viewport to keep the playhead visible, and following
   right-to-left time. Up, down, Play/Pause and Back stay with the system. Drag scrubbing, pinch,
   pan, marker taps and selection are touch-only and not available on tvOS.
+
+- **Watch Demo and TV Demo apps** in `Demo/`, alongside the iOS demo, for trying the watch and TV
+  interaction.
 
 ### Fixed
 
